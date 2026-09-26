@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/smile-minecraft/opencode-ultrawork/main/schema/ultrawork.schema.json",
+  "title": "opencode-ultrawork 設定",
+  "description": "ultrawork.jsonc 的設定格式。全域層在 <OpenCode 全域設定資料夾>/.ultrawork/ultrawork.jsonc，專案層在 <專案根目錄>/.ultrawork/ultrawork.jsonc；兩層同一種格式，先套內建預設值，再疊全域，最後疊專案。物件深層合併，純量與陣列整個覆寫。所有欄位都選填，只寫要覆寫的部分即可。本 schema 比執行時嚴格：模組開關拼錯（例如 comment-signal）會在編輯器就報錯，因為執行時會把它當未知 key 靜默忽略。",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "指向本檔，讓編輯器載入自動完成與欄位檢查。放不進來就沒有驗證，不影響外掛運作。"
+    },
+    "modules": {
+      "$ref": "#/$defs/modules",
+      "description": "八個業務模組的開關；關掉的模組不註冊它的工具與 hook。"
+    },
+    "skiller": {
+      "$ref": "#/$defs/skiller",
+      "description": "技能生命週期管理（skiller 模組）的路徑設定。"
+    },
+    "skills": {
+      "$ref": "#/$defs/skills",
+      "description": "技能清單與技能搜尋的呈現方式。"
+    },
+    "workflow": {
+      "$ref": "#/$defs/workflow",
+      "description": "任務與計畫工作流的行為設定。"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "modules": {
+      "type": "object",
+      "description": "模組開關；只寫要關掉的即可，其餘維持內建預設值。",
+      "properties": {
+        "search": {
+          "type": "boolean",
+          "default": true,
+          "description": "peek_file、grep_context 兩個唯讀搜尋工具。"
+        },
+        "verification": {
+          "type": "boolean",
+          "default": true,
+          "description": "verification_run、change-scope-check 兩個驗證工具。"
+        },
+        "commentSignal": {
+          "type": "boolean",
+          "default": true,
+          "description": "7 個 comment_signal_* 工具與 AI_DO_NOT_EDIT:P0 阻斷。註解檢查需要這個模組才會運作。"
+        },
+        "skills": {
+          "type": "boolean",
+          "default": true,
+          "description": "skill_search 工具與 system prompt 的技能清單精簡。"
+        },
+        "skiller": {
+          "type": "boolean",
+          "default": true,
+          "description": "11 個技能生命週期工具（起草、掃描、晉升、退役）。"
+        },
+        "workflow": {
+          "type": "boolean",
+          "default": true,
+          "description": "任務與計畫註冊檔案、工作說明七節檢查、升級檢查、完成前檢查。"
+        },
+        "diagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "6 個唯讀診斷工具（workflow_bootstrap、workflow_doctor、tool_hook_manifest 等）。"
+        },
+        "memory": {
+          "type": "boolean",
+          "default": true,
+          "description": "專案記憶 project.md 與同步紀錄 receipts/ 的 6 個工具。關掉之後 workflow 不再要求同步紀錄。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "skiller": {
+      "type": "object",
+      "properties": {
+        "personalSkillRoot": {
+          "type": "string",
+          "default": "~/.agents/skills",
+          "description": "個人技能目錄，存放自己寫的技能；掃描與晉升都以它為根。"
+        },
+        "agentsDir": {
+          "type": "string",
+          "default": "auto",
+          "description": "晉升／退役時改寫的角色檔目錄。auto = <OpenCode 全域設定資料夾>/agents；也可以給絕對路徑。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "skills": {
+      "type": "object",
+      "properties": {
+        "catalog": {
+          "type": "string",
+          "enum": ["index", "full"],
+          "default": "index",
+          "description": "技能清單放進 system prompt 的呈現：index 只列技能名稱省 token，full 用 OpenCode 原本的完整清單。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "workflow": {
+      "type": "object",
+      "properties": {
+        "completion": {
+          "$ref": "#/$defs/completion",
+          "description": "任務完成前的檢查條件。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "completion": {
+      "type": "object",
+      "properties": {
+        "requireMemoryReceipt": {
+          "type": "boolean",
+          "default": true,
+          "description": "memory 模組開啟時，任務完成前要先有有效的同步紀錄。memory 關掉時這個值不作用。"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

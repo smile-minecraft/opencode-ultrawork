@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+# 本機工作流狀態目錄：任務與計畫註冊檔案、專案記憶、同步紀錄、稽核日誌都在裡面，
+# 是個人工作階段的資料，不進版控。取代舊版工具清單快照的 gate 現在是
+# tests/v2/native/v1-free-surface.test.ts，不需要另外產快照。
+.opencode/

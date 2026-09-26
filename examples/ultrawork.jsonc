@@ -1,0 +1,41 @@
+{
+  // 這個檔案是 ultrawork.jsonc 的完整範例：把需要的部分複製到
+  // <專案根目錄>/.ultrawork/ultrawork.jsonc（專案層）或
+  // <OpenCode 全域設定資料夾>/.ultrawork/ultrawork.jsonc（全域層）即可。
+  // 兩層格式相同，先套內建預設值，再疊全域，最後疊專案。
+  // 每個欄位都選填，這裡把全部可能的欄位都列出來當參考。
+  "$schema": "https://raw.githubusercontent.com/smile-minecraft/opencode-ultrawork/main/schema/ultrawork.schema.json",
+
+  "modules": {
+    // 模組開關。關掉的模組不註冊它的工具與 hook，其餘維持預設開啟。
+    "search": true,
+    "verification": true,
+    "commentSignal": true,
+    "skills": true,
+    "skiller": true,
+    "workflow": true,
+    // 診斷工具在正式專案通常不需要，這裡示範關掉一個。
+    "diagnostics": false,
+    "memory": true
+  },
+
+  "skiller": {
+    // 個人技能目錄。預設 ~/.agents/skills
+    "personalSkillRoot": "~/.agents/skills",
+    // 晉升／退役時改寫的角色檔目錄。auto = <OpenCode 全域設定資料夾>/agents
+    "agentsDir": "auto"
+  },
+
+  "skills": {
+    // 技能清單在 system prompt 的呈現：index = 只列名稱，full = OpenCode 原本的完整清單
+    "catalog": "index"
+  },
+
+  "workflow": {
+    "completion": {
+      // memory 模組開啟時，任務完成前要先有有效的同步紀錄。
+      // memory 關掉時這個值不作用，完成前檢查會自行放行。
+      "requireMemoryReceipt": true
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "target": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "moduleDetection": "force",
+    "strict": true,
+    // @opencode/plugin（V2）帶進的 effect、@ai-sdk/provider 型別檔本身不過檢查，跳過套件的 .d.ts
+    "skipLibCheck": true,
+    "types": ["bun-types"] // 告訴 VS Code 去讀取 Bun 的型別
+  }
+}

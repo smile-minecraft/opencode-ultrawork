@@ -1,0 +1,54 @@
+{
+  "name": "opencode-ultrawork",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "OpenCode V2 原生外掛（ultrawork）：48 個工具與 6 個 hook，涵蓋工作區搜尋、驗證、工作說明檢查、Comment Signal、技能管理、任務與計畫狀態、診斷與專案記憶。",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smile-minecraft/opencode-ultrawork.git"
+  },
+  "homepage": "https://github.com/smile-minecraft/opencode-ultrawork#readme",
+  "bugs": {
+    "url": "https://github.com/smile-minecraft/opencode-ultrawork/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "plugin",
+    "ai",
+    "agents",
+    "workflow",
+    "tdd",
+    "bun",
+    "typescript"
+  ],
+  "files": [
+    "src",
+    "index.ts",
+    "schema",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/index.ts"
+  },
+  "engines": {
+    "opencode": ">=2.0.0"
+  },
+  "scripts": {
+    "test": "bun test",
+    "test:v2": "bun test tests/v2/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "4.1.8"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.0.16",
+    "@types/bun": "^1.3.11",
+    "@types/node": "^26.0.1",
+    "typescript": "^6.0.3"
+  }
+}
