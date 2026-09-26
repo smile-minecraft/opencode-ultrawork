@@ -129,6 +129,35 @@ export function shouldBlockCompletion(
 // ─── File-level Check ────────────────────────────────────────
 
 /**
+ * 檢查單一檔案並回傳 per-file 明細（`FileReport`）；Markdown 回 null。
+ * `checkFile` 的本體：呼叫端需要每檔明細（結案 gate 聚合、check 工具逐檔
+ * 記錄）時直接用此函式，避免重複 parse。
+ */
+export function checkFileDetailed(
+  filePath: string,
+  source: string,
+  options: ValidateOptions = {},
+): FileReport | null {
+  if (isMarkdownPath(filePath)) return null;
+  const parsed = parseCommentSignals(source, filePath);
+  const v = validateSource(source, parsed.signals, {
+    ...options,
+    filePath,
+  });
+  return {
+    filePath,
+    scanned: true,
+    signals: parsed.signals,
+    violations: v.violations,
+    highRisk: v.highRisk,
+    shouldBlockCompletion: v.shouldBlockCompletion,
+    errorCount: v.errorCount,
+    warningCount: v.warningCount,
+    highRiskCount: v.highRiskCount,
+  };
+}
+
+/**
  * 檢查單一檔案並回傳 CommentSignalReport aggregate。
  * 接受 filePath + source 字串，無 IO；source 由呼叫端負責取得。
  *
@@ -144,10 +173,31 @@ export function checkFile(
   source: string,
   options: ValidateOptions = {},
 ): CommentSignalReport {
-  if (isMarkdownPath(filePath)) {
-    return buildReport([], options);
-  }
-  return checkFiles([{ filePath, source }], options);
+  const detailed = checkFileDetailed(filePath, source, options);
+  return detailed ? buildReport([detailed], options) : buildReport([], options);
+}
+
+/**
+ * 檢查多個檔案並回傳 aggregate＋每檔明細。
+ * 明細與 aggregate 出自同一次 parse（單一路徑）：呼叫端逐檔記錄最新報告
+ * 時用 `fileReports`，回傳給工具層時用 `report`，兩者不可能對不上。
+ */
+export function checkFilesDetailed(
+  entries: CheckFileEntry[],
+  options: ValidateOptions = {},
+): { report: CommentSignalReport; fileReports: FileReport[] } {
+  // 先過濾 Markdown：避免 parser 對 MD 語法（[link] / # heading / ``` fence）誤判
+  const filtered = entries.filter((e) => !isMarkdownPath(e.filePath));
+  const skippedFileCount = entries.length - filtered.length;
+  const fileReports: FileReport[] = filtered.flatMap((entry) => {
+    // 已過濾 Markdown，此處不會回 null；防禦性保留空陣列分支。
+    const fileReport = checkFileDetailed(entry.filePath, entry.source, options);
+    return fileReport === null ? [] : [fileReport];
+  });
+
+  const report = buildReport(fileReports, options);
+  report.skippedFileCount = skippedFileCount;
+  return { report, fileReports };
 }
 
 /**
@@ -165,61 +215,19 @@ export function checkFiles(
   entries: CheckFileEntry[],
   options: ValidateOptions = {},
 ): CommentSignalReport {
-  // 先過濾 Markdown：避免 parser 對 MD 語法（[link] / # heading / ``` fence）誤判
-  const filtered = entries.filter((e) => !isMarkdownPath(e.filePath));
-  const skippedFileCount = entries.length - filtered.length;
-  const fileReports: FileReport[] = filtered.map((entry) => {
-    const parsed = parseCommentSignals(entry.source, entry.filePath);
-    const v = validateSource(entry.source, parsed.signals, {
-      ...options,
-      filePath: entry.filePath,
-    });
-    return {
-      filePath: entry.filePath,
-      scanned: true,
-      signals: parsed.signals,
-      violations: v.violations,
-      highRisk: v.highRisk,
-      shouldBlockCompletion: v.shouldBlockCompletion,
-      errorCount: v.errorCount,
-      warningCount: v.warningCount,
-      highRiskCount: v.highRiskCount,
-    };
-  });
-
-  const report = buildReport(fileReports, options);
-  report.skippedFileCount = skippedFileCount;
-  return report;
+  return checkFilesDetailed(entries, options).report;
 }
 
 /**
- * 檢查 session state 的 modifiedFiles。
- * 預設檢查全部 modifiedFiles；指定 options.path 時僅納入符合路徑
- * （精確檔案路徑或資料夾前綴）的檔案。
- *
- * 非 Markdown 但不合掃描政策（敏感／dotfile／不支援副檔名）者同樣在讀取前排除、
- * 不計入 scanned、計入 skipped（跟目錄掃描與顯式單檔分支一致）。
- *
- * Markdown 檔案會在 matchesPathFilter 之後、呼叫 sourceResolver 之前被排除：
- *   - 不計入 scannedFileCount。
- *   - 不會觸發 sourceResolver（避免 IO + parser 誤判）。
- *   - state.modifiedFiles 本身**不會**被修改；filter 只發生於掃描當下。
- *   - 計入 `skippedFileCount`（讓 caller 區分 scanned / skipped / unreadable）。
- *
- * sourceResolver 為「給定 filePath 回傳 source 或 null」的函式；
- * 回傳 null 表示該檔案無法讀取（不存在 / 已刪除 / 權限不足等），
- * 此時該檔案會被跳過，不計入 scannedFileCount，也不視為 scan 失敗。
- * 該檔會計入 `unreadableFileCount`。
- *
- * @param state 該 session 的 CommentSignalState（提供 modifiedFiles）。
- * @param sourceResolver 給定檔案路徑回傳 source 或 null。
- * @param options 執行選項（today、policy override、可選 path filter）。
+ * `checkChangedFiles` 的明細版：回傳 aggregate＋每檔明細（同一次 parse）。
+ * 呼叫端把 `fileReports` 逐檔寫入最新報告，結案 gate 才能按檔聚合；
+ * 只讀 aggregate 的舊呼叫端改用 `checkChangedFiles`（行為不變）。
  */
-export function checkChangedFiles(
+export function checkChangedFilesDetailed(
   state: CommentSignalState,
   sourceResolver: (filePath: string) => string | null,
   options: CheckChangedFilesOptions = {},
-): CommentSignalReport {
+): { report: CommentSignalReport; fileReports: FileReport[] } {
   const { path: pathFilter } = options;
   // 先按 path filter 篩選；再區分 Markdown（計入 skipped，不呼叫 resolver）
   // 與待掃描檔案（呼叫 resolver，null 計入 unreadable）。如此才能在
@@ -243,12 +251,43 @@ export function checkChangedFiles(
     }
     entries.push({ filePath, source });
   }
-  const report = checkFiles(entries, options);
+  const { report, fileReports } = checkFilesDetailed(entries, options);
   // 始終指派數字型 skippedFileCount / unreadableFileCount，讓 caller
   // 可 deterministic 地區分三類（0 也是合法值）。
   report.skippedFileCount = (report.skippedFileCount ?? 0) + markdownSkipped.length + policySkipped.length;
   report.unreadableFileCount = unreadableFileCount;
-  return report;
+  return { report, fileReports };
+}
+
+/**
+ * 檢查 session state 的 modifiedFiles。
+ * 預設檢查全部 modifiedFiles；指定 options.path 時僅納入符合路徑
+ * （精確檔案路徑或資料夾前綴）的檔案。
+ *
+ * 非 Markdown 但不合掃描政策（敏感／dot 檔／不支援副檔名）者同樣在讀取前排除、
+ * 不計入 scanned、計入 skipped（跟目錄掃描與顯式單檔分支一致）。
+ *
+ * Markdown 檔案會在 matchesPathFilter 之後、呼叫 sourceResolver 之前被排除：
+ *   - 不計入 scannedFileCount。
+ *   - 不會觸發 sourceResolver（避免 IO + parser 誤判）。
+ *   - state.modifiedFiles 本身**不會**被修改；filter 只發生於掃描當下。
+ *   - 計入 `skippedFileCount`（讓 caller 區分 scanned / skipped / unreadable）。
+ *
+ * sourceResolver 為「給定 filePath 回傳 source 或 null」的函式；
+ * 回傳 null 表示該檔案無法讀取（不存在 / 已刪除 / 權限不足等），
+ * 此時該檔案會被跳過，不計入 scannedFileCount，也不視為 scan 失敗。
+ * 該檔會計入 `unreadableFileCount`。
+ *
+ * @param state 該 session 的 CommentSignalState（提供 modifiedFiles）。
+ * @param sourceResolver 給定檔案路徑回傳 source 或 null。
+ * @param options 執行選項（today、policy override、可選 path filter）。
+ */
+export function checkChangedFiles(
+  state: CommentSignalState,
+  sourceResolver: (filePath: string) => string | null,
+  options: CheckChangedFilesOptions = {},
+): CommentSignalReport {
+  return checkChangedFilesDetailed(state, sourceResolver, options).report;
 }
 
 // ─── Path matching helper ────────────────────────────────────

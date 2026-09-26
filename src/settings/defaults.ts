@@ -29,10 +29,20 @@ export interface UltraworkSettings {
     /** 技能清單在 system prompt 的呈現：index 只列名稱，full 走原本完整清單。 */
     catalog: "index" | "full";
   };
+  verification: {
+    /** 能呼叫 verification_run 的 agent；預設只有 momus（第二層 runtime 防護）。 */
+    runAllowedAgents: string[];
+    /** 能呼叫 change-scope-check 的 agent；預設 build 與 ultra。 */
+    scopeCheckAllowedAgents: string[];
+  };
   workflow: {
     completion: {
       /** memory 模組開啟時預設要求同步紀錄；關閉時由完成前檢查自行放行。 */
       requireMemoryReceipt: boolean;
+    };
+    evidencePack: {
+      /** 派發時強制檢查實作說明七節格式的 subagent；預設 implementer／debugger／ultra-coder。 */
+      gatedSubagents: string[];
     };
   };
 }
@@ -55,9 +65,16 @@ export const DEFAULT_SETTINGS: UltraworkSettings = {
   skills: {
     catalog: "index",
   },
+  verification: {
+    runAllowedAgents: ["momus"],
+    scopeCheckAllowedAgents: ["build", "ultra"],
+  },
   workflow: {
     completion: {
       requireMemoryReceipt: true,
+    },
+    evidencePack: {
+      gatedSubagents: ["implementer", "debugger", "ultra-coder"],
     },
   },
 };

@@ -8,13 +8,23 @@
 
 import type { ModuleDefinition, ModuleRuntime, Registration } from "../types.ts";
 import { createChangeScopeCheckTool } from "./change-scope-check.ts";
+import { resolveChangeScopeCheckAllowedAgents } from "./scope-check-policy.ts";
 import { createVerificationRunTool } from "./verification-run.ts";
+import { resolveVerificationRunAllowedAgents } from "./verification-policy.ts";
 
 export const verificationModule: ModuleDefinition = {
   key: "verification",
   register: (runtime: ModuleRuntime): Promise<Registration> => {
-    const verificationRunTool = createVerificationRunTool(runtime.ctx);
-    const changeScopeCheckTool = createChangeScopeCheckTool(runtime.ctx);
+    // 授權清單由設定解出（沒寫或寫壞都回內建預設）：register 時快照一次，
+    // 之後改設定要重載才生效（與模組開關同一語意）。
+    const verificationRunTool = createVerificationRunTool(
+      runtime.ctx,
+      resolveVerificationRunAllowedAgents(runtime.settings),
+    );
+    const changeScopeCheckTool = createChangeScopeCheckTool(
+      runtime.ctx,
+      resolveChangeScopeCheckAllowedAgents(runtime.settings),
+    );
     return runtime.ctx.tool.transform((editor) => {
       editor.add(verificationRunTool as never);
       editor.add(changeScopeCheckTool as never);

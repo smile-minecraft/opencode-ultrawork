@@ -39,7 +39,7 @@
 
 import type { CommentSignal, UnformattedFunctionalHit, SourceCommentLine } from "./types.ts";
 import { defaultCommentSignalPolicy } from "./policy.ts";
-import { extractSourceCommentLines } from "./lexer.ts";
+import { extractSourceCommentLines, HASH_COMMENT_EXTENSIONS } from "./lexer.ts";
 
 export type { SourceCommentLine } from "./types.ts";
 export {
@@ -52,8 +52,11 @@ export {
 // ─── Regex Patterns ──────────────────────────────────────────
 // 注意：以下 regex 為 module-level constant，避免每次呼叫重建。
 
-/** 註解起始（line-comment 或 block-comment 兩種）。 */
+/** 註解起始（line-comment 或 block-comment 兩種；`#` 只在 hash 語言啟用）。 */
 const COMMENT_START = /(\/\/|\/\*)/;
+
+/** hash 語言的註解起始：沿用 `//`／`/*`（無退化），另接受 `#`。 */
+const COMMENT_START_HASH = /(\/\/|\/\*|#)/;
 
 /**
  * 從註解內容的第一個語意項目抓取 tag header（含 severity 與 metadata）。
@@ -80,6 +83,13 @@ const TAG_HEADER_RE = /(?:^|\n)\s*(?:(?:\/\/|\/\*+|\*)\s*)\[(?<tag>[^\]:\s]+)(?:
  * `/// [TAG]` 污染真實註解的解析。
  */
 const TAG_HEADER_TRIPLE_SLASH_RE = /(?:^|\n)\s*(?:(?:\/\/\/?|\/\*+|\*)\s*)\[(?<tag>[^\]:\s]+)(?::(?<sev>[A-Z0-9]+))?(?<meta>\s+[^\]]+)?\]/;
+
+/**
+ * hash 語言（`#` 註解：`.sh`／`.yaml`／`.yml`／`.py`／`.toml`）專用
+ * tag header：除 `TAG_HEADER_RE` 的前綴外，另接受 `#`。只在副檔名屬於
+ * `HASH_COMMENT_EXTENSIONS` 時使用；`//` 系語言的行為完全不變。
+ */
+const TAG_HEADER_HASH_RE = /(?:^|\n)\s*(?:(?:\/\/|\/\*+|\*|#)\s*)\[(?<tag>[^\]:\s]+)(?::(?<sev>[A-Z0-9]+))?(?<meta>\s+[^\]]+)?\]/;
 
 /** metadata token：`key=value`，key 只允許英數底線與 dash。 */
 const META_TOKEN_RE = /([a-zA-Z_][\w-]*)=([^\s\]]+)/g;
@@ -117,8 +127,10 @@ const UNFMT_CJK_RE = /^(待辦|之後處理|之後再|之後再說|之後補|之
   *     丟給既有 tryExtractFromLine 規則；對多行 group 把 source 的整段
   *     行重新 join（保留原始 star-prefix 與 open/close markers），再以
   *     對應的 tag header regex（精確路徑另含 `///`）找出實際 header 所在的行。
- *   - 對非 TS/JS 副檔名（如 yaml/yml/sh, html/vue/svelte, css, json,
- *     txt）走語言原生 lexer；與既有 validator 路徑一致。
+ *   - 對非 TS/JS 副檔名（如 yaml/yml/sh/py/toml, html/vue/svelte, css,
+ *     json, txt）走語言原生 lexer；與既有 validator 路徑一致。
+ *     hash 語言的單行 entry 以 `"# " + entry.text` 重建 raw（lexer 已做
+ *     字串邊界判定），行尾註解與字串內的 `#` 不會誤判。
  *
  * @param source 檔案原始內容（含換行）。
  * @param filePath 來源檔案路徑（注入到每個 CommentSignal，同時用於副檔名判斷）。
@@ -127,6 +139,11 @@ export function parseCommentSignals(source: string, filePath: string): { filePat
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const comments = extractSourceCommentLines(source, filePath);
   const signals: CommentSignal[] = [];
+  // hash 語言（`#` 註解）的 entry 一律是單行 `#` 註解：raw 直接從 lexer
+  // 已做字串邊界判定的 entry.text 重建（`"# " + text`），行尾註解與
+  // 字串內的 `#`（如 `"a#b"`）都不會誤判；`//` 系語言沿用整行 raw。
+  const extension = filePath.toLowerCase().match(/\.[^.\/]+$/)?.[0] ?? "";
+  const allowHashMarker = HASH_COMMENT_EXTENSIONS.has(extension);
 
   // 將 lexer 回傳的 comment lines 依「類型 + 行號連續性」分組成 logical
   // comment：line comment（src 行首為 `//`）永遠是 1-entry group；
@@ -194,11 +211,16 @@ export function parseCommentSignals(source: string, filePath: string): { filePat
       // 三斜線 doc 前綴；避免整行重找 marker 時命中字串內的假 marker
       // （如 `"/// [WARN:P1]"`）；未提供時沿用既有整行行為與雙斜線前綴
       //（其他語言相容）。
+      // hash 語言另從 entry.text 重建 `"# " + text`（見上方說明）。
       const entry = group[0];
       const fullRaw = lines[entry.line - 1] ?? "";
       const allowTripleSlash = entry.startColumn !== undefined;
-      const raw = allowTripleSlash ? fullRaw.slice(entry.startColumn as number) : fullRaw;
-      const parsed = tryExtractFromLine(raw, filePath, entry.line, false, allowTripleSlash);
+      const raw = allowTripleSlash
+        ? fullRaw.slice(entry.startColumn as number)
+        : allowHashMarker
+          ? `# ${entry.text}`
+          : fullRaw;
+      const parsed = tryExtractFromLine(raw, filePath, entry.line, false, allowTripleSlash, allowHashMarker);
       if (parsed) signals.push(parsed);
       continue;
     }
@@ -217,7 +239,7 @@ export function parseCommentSignals(source: string, filePath: string): { filePat
     const merged = blockLines.join("\n");
 
     // 找出 tag header 實際落在 merged 的哪一行（0-based offset）。
-    const tagRe = allowTripleSlash ? TAG_HEADER_TRIPLE_SLASH_RE : TAG_HEADER_RE;
+    const tagRe = allowTripleSlash ? TAG_HEADER_TRIPLE_SLASH_RE : allowHashMarker ? TAG_HEADER_HASH_RE : TAG_HEADER_RE;
     const mergedLines = merged.split("\n");
     let headerOffset = 0;
     for (let i = 0; i < mergedLines.length; i++) {
@@ -228,7 +250,7 @@ export function parseCommentSignals(source: string, filePath: string): { filePat
     }
     const startLine = startSrcLine + headerOffset;
 
-    const parsed = tryExtractFromLine(merged, filePath, startLine, true, allowTripleSlash);
+    const parsed = tryExtractFromLine(merged, filePath, startLine, true, allowTripleSlash, allowHashMarker);
     if (parsed) signals.push(parsed);
   }
 
@@ -241,6 +263,8 @@ export function parseCommentSignals(source: string, filePath: string): { filePat
  * `allowTripleSlash` 只在 raw 已從 lexer 提供的 marker 起始欄重建時
  * 為 true（目前為 Swift `startColumn` 路徑），此時才接受 `///` 前綴；
  * 整行 fallback 一律 false，維持原本雙斜線行為。
+ * `allowHashMarker` 只在副檔名屬於 hash 語言時為 true，此時另接受 `#`
+ * 前綴；`//` 系語言一律 false，行為不變。
  */
 function tryExtractFromLine(
   raw: string,
@@ -248,12 +272,17 @@ function tryExtractFromLine(
   line: number,
   _isBlock: boolean,
   allowTripleSlash = false,
+  allowHashMarker = false,
 ): CommentSignal | null {
-  const commentStart = raw.search(COMMENT_START);
+  const commentStart = raw.search(allowHashMarker ? COMMENT_START_HASH : COMMENT_START);
   if (commentStart < 0) return null;
   const commentRaw = raw.slice(commentStart);
 
-  const tagRe = allowTripleSlash ? TAG_HEADER_TRIPLE_SLASH_RE : TAG_HEADER_RE;
+  const tagRe = allowTripleSlash
+    ? TAG_HEADER_TRIPLE_SLASH_RE
+    : allowHashMarker
+      ? TAG_HEADER_HASH_RE
+      : TAG_HEADER_RE;
   const m = commentRaw.match(tagRe);
   if (!m || !m.groups) return null;
 

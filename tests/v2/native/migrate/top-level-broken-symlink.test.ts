@@ -5,14 +5,15 @@
  * `existsSync()`，斷鏈 symlink 會被誤判成「舊位置不存在」而記成 `source-missing`，
  * 該層卻照樣寫下搬遷標記：資料沒搬走、外掛與診斷工具也都認為搬完了。
  *
- * 這裡把頂層的兩種差別釘住：
+ * 這裡把頂層的差別釘住：
  * - 頂層是斷鏈 symlink → 該項 `copy-failed`、該層不寫標記、下次啟動重試；
  * - 頂層真的不存在（`ENOENT`）→ `source-missing`、該層照常完成並寫標記。
- * 有效 symlink（指向存在的目標）維持照常複製內容。
+ * - 頂層是有效 symlink（目標存在）→ 同樣 `copy-failed`、不跟隨：跟隨它會把
+ *   外部檔案的內容讀進 `.ultrawork`，修好方式是把 symlink 換成真檔案／真目錄。
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setupUltrawork } from "../../../../src/index.ts";
 import { MIGRATION_MARKER_FILE, migrateGlobalData } from "../../../../src/migrate/index.ts";
@@ -93,21 +94,32 @@ describe("頂層項目是斷鏈 symlink", () => {
     expect(existsSync(marker(root))).toBe(false);
   });
 
-  test("symlink 目標補回來之後重跑會補完並寫上標記", () => {
+  test("symlink 目標補回來也不跟隨；換成真檔案後重跑才補完並寫上標記", () => {
     const root = tempRoot("uw-migrate-global-");
     seedLegacyGlobal(root);
     const link = makeBrokenTopLevelLink(root);
     migrateGlobalData({ root, now });
 
+    // 只把外部目標補回來（symlink 還在）仍然拒絕：跟隨它等於讀外部檔案。
     writeFile(root, "external-storage/skills-policy.json", '{"version":"1.0.0"}\n');
+    const stillLink = migrateGlobalData({ root, now });
+
+    expect(stillLink.ok).toBe(false);
+    expect(stillLink.errors.map((item) => item.reason)).toContain("copy-failed");
+    expect(existsSync(join(root, ".ultrawork/skills-policy.json"))).toBe(false);
+    expect(existsSync(marker(root))).toBe(false);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+
+    // 修好方式：symlink 換成真檔案，重跑才補完。
+    rmSync(link, { force: true });
+    writeFile(root, "skills-policy.json", '{"version":"1.0.0"}\n');
     const retry = migrateGlobalData({ root, now });
 
     expect(retry.ok).toBe(true);
     expect(retry.errors).toEqual([]);
     expect(readFileSync(join(root, ".ultrawork/skills-policy.json"), "utf-8")).toBe('{"version":"1.0.0"}\n');
     expect(existsSync(marker(root))).toBe(true);
-    // 舊的 symlink 是改名保留，不是被刪掉。
-    expect(lstatSync(join(root, archivedName("skills-policy.json"))).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(root, archivedName("skills-policy.json")))).toBe(true);
     expect(existsSync(join(root, ".ultrawork/skill-quarantine/beta/SKILL.md"))).toBe(true);
   });
 
@@ -136,7 +148,7 @@ describe("頂層項目是斷鏈 symlink", () => {
 });
 
 describe("頂層項目是有效 symlink 或真的不存在", () => {
-  test("有效 symlink → 照常複製內容，舊 symlink 改名保留", () => {
+  test("有效 symlink → 拒絕跟隨：不複製、不寫標記、可重試", () => {
     const root = tempRoot("uw-migrate-global-");
     seedLegacyGlobal(root);
     writeFile(root, "external-storage/skills-policy.json", '{"version":"1.0.0"}\n');
@@ -145,12 +157,21 @@ describe("頂層項目是有效 symlink 或真的不存在", () => {
 
     const result = migrateGlobalData({ root, now });
 
-    expect(result.ok).toBe(true);
-    expect(result.migrated.map((item) => item.from)).toContain(link);
-    expect(result.errors).toEqual([]);
-    expect(readFileSync(join(root, ".ultrawork/skills-policy.json"), "utf-8")).toBe('{"version":"1.0.0"}\n');
-    expect(existsSync(marker(root))).toBe(true);
-    expect(lstatSync(join(root, archivedName("skills-policy.json"))).isSymbolicLink()).toBe(true);
+    // 目標存在也不跟隨：外部檔案的內容不得被讀進 .ultrawork。
+    expect(result.ok).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].reason).toBe("copy-failed");
+    expect(result.errors[0].from).toBe(link);
+    expect(existsSync(join(root, ".ultrawork/skills-policy.json"))).toBe(false);
+    expect(existsSync(marker(root))).toBe(false);
+    // symlink 本身留在原位，沒被刪也沒被改名。
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(root, archivedName("skills-policy.json")))).toBe(false);
+
+    const retry = migrateGlobalData({ root, now });
+    expect(retry.alreadyMigrated).toBe(false);
+    expect(retry.ok).toBe(false);
+    expect(retry.errors.map((item) => item.reason)).toEqual(["copy-failed"]);
   });
 
   test("舊位置真的不存在 → source-missing，該層照常完成並寫標記", () => {

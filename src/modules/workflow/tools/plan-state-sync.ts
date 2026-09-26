@@ -92,7 +92,7 @@ export function createPlanStateSyncTool(runtime: UltraworkRuntimeContext) {
       const timestamp = new Date().toISOString();
       if (event === "status") {
         const registry = runtime.readPlansRegistry(context, false);
-        return jsonResult({ ok: true, registry }, null, 2);
+        return jsonResult({ ok: true, registry });
       }
       const result = await runtime.transactRegistries(context, ({ tasks: taskRegistry, plans: registry }, control) => {
 
@@ -135,7 +135,7 @@ export function createPlanStateSyncTool(runtime: UltraworkRuntimeContext) {
         registry.activePlanIds = uniq([...registry.activePlanIds, planId]);
         registry.planCursor = planId;
         control.commit();
-        return jsonResult({ ok: true, planId, state: newPlan.state, createdAt: timestamp, project: currentProject }, null, 2);
+        return jsonResult({ ok: true, planId, state: newPlan.state, createdAt: timestamp, project: currentProject });
       }
 
       if (!plan) return jsonResult({ ok: false, code: "PLAN_NOT_FOUND", error: `找不到計畫 ${planId}` });
@@ -201,10 +201,10 @@ export function createPlanStateSyncTool(runtime: UltraworkRuntimeContext) {
         plan.history.push(`| ${timestamp} | ${from} → ${to} | ${owner || "—"} | 狀態轉換 |`);
         plan.history = plan.history.slice(-PLAN_HISTORY_LIMIT);
         control.commit();
-        return jsonResult({ ok: true, planId, state: plan.state, updatedAt: timestamp, project: currentProject }, null, 2);
+        return jsonResult({ ok: true, planId, state: plan.state, updatedAt: timestamp, project: currentProject });
       } else if (event === "complete") {
         if (prevState === "COMPLETED") {
-          return jsonResult({ ok: true, planId, state: "COMPLETED", updatedAt: plan.updatedAt, message: "計畫已經完成" }, null, 2);
+          return jsonResult({ ok: true, planId, state: "COMPLETED", updatedAt: plan.updatedAt, message: "計畫已經完成" });
         }
         if (isFinishedPlanState(prevState)) {
           return jsonResult({ ok: false, code: "TERMINAL_STATE_CONFLICT", error: `計畫已經在終態 ${prevState}，不能再完成` });
@@ -227,10 +227,10 @@ export function createPlanStateSyncTool(runtime: UltraworkRuntimeContext) {
         registry.activePlanIds = registry.activePlanIds.filter(id => id !== planId);
         if (registry.planCursor === planId) registry.planCursor = registry.activePlanIds.length > 0 ? registry.activePlanIds[0] : null;
         control.commit();
-        return jsonResult({ ok: true, planId, state: "COMPLETED", updatedAt: timestamp, project: currentProject }, null, 2);
+        return jsonResult({ ok: true, planId, state: "COMPLETED", updatedAt: timestamp, project: currentProject });
       } else if (event === "cancel") {
         if (prevState === "CANCELLED") {
-          return jsonResult({ ok: true, planId, state: "CANCELLED", updatedAt: plan.updatedAt, message: "計畫已經取消" }, null, 2);
+          return jsonResult({ ok: true, planId, state: "CANCELLED", updatedAt: plan.updatedAt, message: "計畫已經取消" });
         }
         if (isFinishedPlanState(prevState)) {
           return jsonResult({ ok: false, code: "TERMINAL_STATE_CONFLICT", error: `計畫已經在終態 ${prevState}，不能取消` });
@@ -256,10 +256,10 @@ export function createPlanStateSyncTool(runtime: UltraworkRuntimeContext) {
         registry.activePlanIds = registry.activePlanIds.filter(id => id !== planId);
         if (registry.planCursor === planId) registry.planCursor = registry.activePlanIds.length > 0 ? registry.activePlanIds[0] : null;
         control.commit();
-        return jsonResult({ ok: true, planId, state: "CANCELLED", updatedAt: timestamp, project: currentProject }, null, 2);
+        return jsonResult({ ok: true, planId, state: "CANCELLED", updatedAt: timestamp, project: currentProject });
       } else if (event === "fail") {
         if (prevState === "FAILED") {
-          return jsonResult({ ok: true, planId, state: "FAILED", updatedAt: plan.updatedAt, message: "計畫已經標記為失敗" }, null, 2);
+          return jsonResult({ ok: true, planId, state: "FAILED", updatedAt: plan.updatedAt, message: "計畫已經標記為失敗" });
         }
         if (isFinishedPlanState(prevState)) {
           return jsonResult({ ok: false, code: "TERMINAL_STATE_CONFLICT", error: `計畫已經在終態 ${prevState}，不能標記為失敗` });
@@ -283,7 +283,7 @@ export function createPlanStateSyncTool(runtime: UltraworkRuntimeContext) {
         registry.activePlanIds = registry.activePlanIds.filter(id => id !== planId);
         if (registry.planCursor === planId) registry.planCursor = registry.activePlanIds[0] ?? null;
         control.commit();
-        return jsonResult({ ok: true, planId, state: "FAILED", updatedAt: timestamp, project: currentProject }, null, 2);
+        return jsonResult({ ok: true, planId, state: "FAILED", updatedAt: timestamp, project: currentProject });
       } else if (event === "block") {
         if (!reason?.trim()) return jsonResult({ ok: false, code: "REASON_REQUIRED", error: "暫停計畫需要填 reason" });
         const allowed = VALID_PLAN_TRANSITIONS[prevState] || [];
@@ -293,7 +293,7 @@ export function createPlanStateSyncTool(runtime: UltraworkRuntimeContext) {
         plan.history.push(`| ${timestamp} | ${prevState} → BLOCKED | ${owner || "—"} | ${reason.trim()} |`);
         plan.history = plan.history.slice(-PLAN_HISTORY_LIMIT);
         control.commit();
-        return jsonResult({ ok: true, planId, state: "BLOCKED", updatedAt: timestamp, project: currentProject }, null, 2);
+        return jsonResult({ ok: true, planId, state: "BLOCKED", updatedAt: timestamp, project: currentProject });
       } else if (event === "resume") {
         if (isFinishedPlanState(prevState)) {
           return jsonResult({ ok: false, code: "TERMINAL_STATE_CONFLICT", error: `計畫已經在終態 ${prevState}，不能復原` });
@@ -315,7 +315,7 @@ export function createPlanStateSyncTool(runtime: UltraworkRuntimeContext) {
         registry.activePlanIds = uniq([...registry.activePlanIds, planId!]);
         if (!registry.planCursor) registry.planCursor = planId!;
         control.commit();
-        return jsonResult({ ok: true, planId, state: plan.state, updatedAt: timestamp, project: currentProject }, null, 2);
+        return jsonResult({ ok: true, planId, state: plan.state, updatedAt: timestamp, project: currentProject });
       }
 
       return jsonResult({ ok: false, code: "UNKNOWN_EVENT", error: `不認得的 event：${event}` });

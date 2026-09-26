@@ -391,7 +391,10 @@ describe("既存標記路徑也要通過封頂", () => {
 
     const report = inspectProjectMigration(projectRoot);
 
-    expect(report.markerExists).toBe(true);
+    // 外部那份是別專案的空標記：沒有本層的完成記錄，所以 markerExists 為 false；
+    // 但檔案確實在磁碟上（markerFilePresent），pending 照樣為 true，訊號不斷。
+    expect(report.markerExists).toBe(false);
+    expect(report.markerFilePresent).toBe(true);
     expect(report.pending).toBe(true);
     expect(report.reason).toBe("unsafe-path");
     expect(report.detail).toContain("symlink");
@@ -453,17 +456,21 @@ describe("既存標記路徑也要通過封頂", () => {
   });
 });
 
-/** 封頂只管「父層」；項目本身的 symlink 語意不變。 */
+/** 封頂管「父層」；項目本身是 symlink 時由 `copyTree` 一律拒絕（不跟隨）。 */
 describe("封頂不改變項目本身的語意", () => {
-  test("頂層項目自己是有效 symlink（父層是普通目錄）→ 照常搬，舊 symlink 改名保留", () => {
+  test("頂層項目自己是有效 symlink（父層是普通目錄）→ 拒絕、不複製、不寫標記", () => {
     const root = tempRoot("uw-migrate-global-");
     writeFile(root, "external-storage/skills-policy.json", '{"version":"1.0.0"}\n');
-    symlinkSync(join(root, "external-storage/skills-policy.json"), join(root, "skills-policy.json"));
+    const link = join(root, "skills-policy.json");
+    symlinkSync(join(root, "external-storage/skills-policy.json"), link);
 
     const result = migrateGlobalData({ root, now });
 
-    expect(result.ok).toBe(true);
-    expect(result.migrated.map((item) => item.to)).toContain(join(root, ".ultrawork/skills-policy.json"));
-    expect(lstatSync(join(root, archived("skills-policy.json"))).isSymbolicLink()).toBe(true);
+    // 即使目標存在也不跟隨：外部檔案的內容不得被讀進 .ultrawork。
+    expect(result.ok).toBe(false);
+    expect(result.errors.map((item) => item.reason)).toContain("copy-failed");
+    expect(existsSync(join(root, ".ultrawork/skills-policy.json"))).toBe(false);
+    expect(existsSync(marker(root))).toBe(false);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
   });
 });

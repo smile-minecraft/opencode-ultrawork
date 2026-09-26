@@ -100,10 +100,16 @@ export interface MigrateLayerOptions {
 /** 搬遷狀態診斷（供 `workflow_doctor` 用）。 */
 export interface MigrationStateReport {
   markerPath: string;
+  /**
+   * 涵蓋專案層的標記存在（新格式看 `layers.project`，舊格式看條目落點；
+   * 空的舊標記不算涵蓋，見 `marker.ts`）。
+   */
   markerExists: boolean;
+  /** 標記檔本身在不在磁碟上（無論涵蓋哪一層；訊息用，不做判定）。 */
+  markerFilePresent: boolean;
   /** 仍然存在的舊資料位置（相對於專案根目錄）。 */
   legacySources: string[];
-  /** 需要回報「搬遷未完成或失敗」：舊資料還在但沒有標記，或標記在而 `.ultrawork/` 的父層沒通過封頂。 */
+  /** 需要回報「搬遷未完成或失敗」：舊資料還在但沒有涵蓋本層的標記，或標記在而 `.ultrawork/` 的父層沒通過封頂。 */
   pending: boolean;
   /**
    * pending 的原因代碼，與搬移端 `MigrationItemOutcome.reason` 同一套值。

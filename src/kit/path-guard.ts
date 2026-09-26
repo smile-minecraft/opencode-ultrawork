@@ -6,6 +6,7 @@
  */
 
 import { lstatSync, realpathSync, type Stats } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 /** assert 失敗時丟出的錯誤，帶 filePath／worktreeRoot 方便診斷。 */
@@ -44,6 +45,85 @@ export function resolveInsideWorktree(filePath: string, worktreeRoot: string): s
   const resolved = resolve(worktreeRoot, filePath);
   assertSafeWorktreePath(resolved, worktreeRoot);
   return resolved;
+}
+
+/**
+ * 判斷路徑是否屬於「unsafe root」黑名單。
+ *
+ * 這是全外掛唯一的黑名單判定（workflow／search／verification／migrate／
+ * memory／comment-signal／skiller 一律從這裡取用，不再各寫一份）：
+ *   - 空字串、`/`、`.`、`..`
+ *   - `/Users`、`/Volumes`（macOS 系統關鍵目錄，避免誤在根或使用者根
+ *     建立 `.ultrawork`）
+ *   - 家目錄本身（使用者已裁定：一致性優先於個別工具的好用度，讀取類
+ *     工具同樣拒絕；家目錄下的一般子目錄不受影響）
+ *
+ * 除 lexical 黑名單外，另對 realpath 後的真實路徑再套一次（目標不存在時
+ * 取最近存在祖先）。否則指向 `/`、`/Users`、家目錄的 symlink alias 會
+ * 通過 lexical 檢查，讓寫入落在系統關鍵目錄。無法確認 containment 時
+ * 一律 fail closed。
+ */
+export function isUnsafeRoot(path: string): boolean {
+  if (!path) return true;
+  const resolved = resolve(path);
+  const home = resolve(homedir());
+  const protectedRoots = new Set([sep, join(sep, "Users"), join(sep, "Volumes"), home]);
+  if (protectedRoots.has(resolved)) return true;
+  const real = resolveExistingRealpath(resolved);
+  // 無法解析出任何存在祖先 → 無法確認 containment → fail closed。
+  if (!real) return true;
+  if (protectedRoots.has(real)) return true;
+  const homeReal = resolveExistingRealpath(home);
+  return homeReal !== undefined && real === homeReal;
+}
+
+/**
+ * 回傳 target 的真實路徑；target 不存在時逐層向上找最近的存在祖先解析，
+ * 讓「root 尚未建立但其父鏈含 symlink」的情況也能被 containment 檢查涵蓋。
+ * 連檔案系統根都無法解析時回傳 undefined（呼叫端 fail closed）。
+ */
+function resolveExistingRealpath(target: string): string | undefined {
+  let current = target;
+  for (;;) {
+    try {
+      return realpathSync(current);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return undefined;
+      current = parent;
+    }
+  }
+}
+
+/** 敏感檔名（不分大小寫，比對路徑的每一段）：私鑰、憑證、token 設定檔。 */
+const SENSITIVE_FILENAMES = new Set([
+  "id_rsa",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "credentials.json",
+  "service-account.json",
+  ".npmrc",
+  ".netrc",
+  ".git-credentials",
+]);
+
+/**
+ * 敏感路徑判斷（檔名層級，純字串、不碰檔案系統）。
+ *
+ * 全外掛唯一的敏感清單判定：`.env.example` 豁免；`.env`／`.env.*`、
+ * 私鑰檔名（含 `id_ecdsa`）、憑證設定檔（`.npmrc`／`.netrc`／
+ * `.git-credentials` 等）、`.(pem|key|p12|pfx)` 皆敏感。
+ */
+export function isSensitivePath(relativePath: string): boolean {
+  const parts = relativePath.split("\\").join("/").split("/").filter(Boolean);
+  return parts.some((part) => {
+    const lower = part.toLowerCase();
+    if (lower === ".env.example") return false;
+    if (lower === ".env" || lower.startsWith(".env.")) return true;
+    if (SENSITIVE_FILENAMES.has(lower)) return true;
+    return /\.(?:pem|key|p12|pfx)$/i.test(lower);
+  });
 }
 
 function lstatIfPresent(path: string): Stats | null {

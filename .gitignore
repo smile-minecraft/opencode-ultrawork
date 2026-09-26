@@ -4,3 +4,4 @@ node_modules/
 # 是個人工作階段的資料，不進版控。取代舊版工具清單快照的 gate 現在是
 # tests/v2/native/v1-free-surface.test.ts，不需要另外產快照。
 .opencode/
+.ultrawork/

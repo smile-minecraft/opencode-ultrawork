@@ -14,12 +14,13 @@ import { jsonResult } from "../../kit/json.ts";
 import {
   checkFile,
   checkFiles,
-  checkChangedFiles,
+  checkFilesDetailed,
+  checkChangedFilesDetailed,
   isMarkdownPath,
   type CheckChangedFilesOptions,
   type CheckFileEntry,
 } from "./guard.ts";
-import { isScannableExplicitPath, toPolicyRelativePath } from "./file-scan.ts";
+import { isDirectoryTargetPath, isScannableExplicitPath, isWorktreeRootPath, toPolicyRelativePath } from "./file-scan.ts";
 import { defaultCommentSignalPolicy } from "./policy.ts";
 import type { CommentSignalReport } from "./types.ts";
 import type { CommentSignalToolDeps } from "./tool-deps.ts";
@@ -54,16 +55,25 @@ export function resolveCheckInputs(
 }
 
 /**
- * 判斷 `path` 是否看起來像資料夾路徑（不以支援的 executable 副檔名結尾）。
- * 用於區分 explicit path 是單檔或資料夾。
+ * 這一次掃描是否足以替「歸不出範圍的舊阻斷」重新確立真相。
+ *
+ * 只有兩種範圍算完整：
+ *   - `path === undefined`：工作階段重掃，涵蓋本工作階段所有已修改檔。
+ *   - `path` 指向 worktree 根：整專案重掃，涵蓋全部可掃描檔。這個是必要的
+ *     逃生門——工作階段若沒有任何可掃描的已修改檔，工作階段重掃永遠
+ *     `scannedFileCount === 0`，標記會變成走不出來的死路。
+ * 其餘（局部路徑）範圍不足，不足以解除。
+ *
+ * 另外必須實際有掃到檔案且結果乾淨：掃不到東西等於沒有證據。
  */
-function isDirectoryLikePath(path: string): boolean {
-  if (path.endsWith("/")) return true;
-  // 含點號且以常見 executable 副檔名結尾 → 視為單檔
-  if (/\.[a-zA-Z0-9]+$/.test(path)) return false;
-  return true;
+function isCompleteCleanSweep(
+  worktree: string,
+  path: string | undefined,
+  report: CommentSignalReport,
+): boolean {
+  const coversEverything = path === undefined || isWorktreeRootPath(worktree, path);
+  return coversEverything && report.scannedFileCount > 0 && !report.shouldBlockCompletion;
 }
-
 /**
  * 將 fail-closed report 加上 metadata 與障礙旗標。
  * - Markdown-only 顯式 path 由呼叫端負責不要觸發（透過 isMarkdownPath
@@ -140,7 +150,7 @@ export function createCommentSignalCheckTool(deps: CommentSignalToolDeps) {
         // Markdown 顯式 path：依既有規則直接回空 report，不觸發 fail-closed。
         if (isMarkdownPath(path)) {
           report = checkFile(path, "", { today, policy: defaultCommentSignalPolicy });
-        } else if (isDirectoryLikePath(path)) {
+        } else if (isDirectoryTargetPath(worktree, path)) {
           // 視為資料夾：透過 deps.directoryResolver 取得資料夾內檔案清單。
           const filePaths = deps.directoryResolver
             ? deps.directoryResolver(worktree, path)
@@ -166,7 +176,12 @@ export function createCommentSignalCheckTool(deps: CommentSignalToolDeps) {
               }
               entries.push({ filePath: fp, source });
             }
-            report = checkFiles(entries, { today, policy: defaultCommentSignalPolicy });
+            const detailed = checkFilesDetailed(entries, { today, policy: defaultCommentSignalPolicy });
+            report = detailed.report;
+            // 逐檔刷新最新報告（結案 gate 按檔聚合；讀不到的檔保留舊報告，不清除）。
+            for (const fileReport of detailed.fileReports) {
+              await deps.store.recordFileReport(sessionID, fileReport.filePath, fileReport);
+            }
             // 顯式 supported path 卻 zero readable → fail closed。
             if (report.scannedFileCount === 0) {
               report = markFailClosed(
@@ -194,8 +209,19 @@ export function createCommentSignalCheckTool(deps: CommentSignalToolDeps) {
             report = checkFiles([], { today, policy: defaultCommentSignalPolicy });
             report = markFailClosed(report, "file_unreadable", 1);
           } else {
-            report = checkFile(path, source, { today, policy: defaultCommentSignalPolicy });
+            const detailed = checkFilesDetailed(
+              [{ filePath: path, source }],
+              { today, policy: defaultCommentSignalPolicy },
+            );
+            report = detailed.report;
+            for (const fileReport of detailed.fileReports) {
+              await deps.store.recordFileReport(sessionID, fileReport.filePath, fileReport);
+            }
           }
+        }
+        // 明確重掃整個 worktree（path 指向根）且乾淨：見 isCompleteCleanSweep。
+        if (isCompleteCleanSweep(worktree, path, report)) {
+          await deps.store.dischargeUnattributedLegacyBlock(sessionID);
         }
       } else {
         // 預設（changedOnly=true 或僅指定 path）：走 checkChangedFiles
@@ -203,7 +229,26 @@ export function createCommentSignalCheckTool(deps: CommentSignalToolDeps) {
         // changed-only 政策判定 canonical 化（symlink 別名現形）。
         opts.worktree = worktree;
         const modifiedFiles = await deps.store.getModifiedFiles(sessionID);
-        report = checkChangedFiles({ sessionID, modifiedFiles, lastReport: null, warnings: [] }, resolver, opts);
+        const detailed = checkChangedFilesDetailed(
+          { sessionID, modifiedFiles, lastReport: null, warnings: [], fileReports: {} },
+          resolver,
+          opts,
+        );
+        report = detailed.report;
+        // 逐檔刷新最新報告：已修好的檔以乾淨報告覆蓋舊阻斷，
+        // 結案 gate 才不會誤擋；讀不到／被政策跳過的檔保留舊報告。
+        for (const fileReport of detailed.fileReports) {
+          await deps.store.recordFileReport(sessionID, fileReport.filePath, fileReport);
+        }
+        // 記下這次重掃的實際結果：結案訊息要靠它判斷「重掃工作階段會不會掃到
+        // 東西」（modifiedFiles 非空不等於有可掃描檔）。
+        if (!opts.path) await deps.store.recordSessionSweep(sessionID, report.scannedFileCount);
+        // 這一支掃的是「本工作階段所有已修改檔」，是僅次於整專案重掃的完整
+        // 範圍：乾淨時才解除升級前那筆無法歸檔的舊版阻斷（局部掃描不行，
+        // 否則等於用掃描範圍不足當成通過）。
+        if (isCompleteCleanSweep(worktree, opts.path, report)) {
+          await deps.store.dischargeUnattributedLegacyBlock(sessionID);
+        }
       }
 
       // 將本次結果寫入 session state 供 touched_report 讀取

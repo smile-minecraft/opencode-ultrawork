@@ -22,7 +22,7 @@ import { jsonResult } from "../../kit/json.ts";
 import { defaultCommentSignalPolicy } from "./policy.ts";
 import type { CommentSignalReport, CommentSignalPolicy, Violation } from "./types.ts";
 import { checkFile, checkFiles, checkChangedFiles, isMarkdownPath, type CheckFileEntry } from "./guard.ts";
-import { isScannableExplicitPath, toPolicyRelativePath } from "./file-scan.ts";
+import { isDirectoryTargetPath, isScannableExplicitPath, toPolicyRelativePath } from "./file-scan.ts";
 import type { CommentSignalToolDeps } from "./tool-deps.ts";
 import {
   applySuppressions,
@@ -199,7 +199,7 @@ export function createCommentSignalBaselineTool(deps: CommentSignalToolDeps) {
       let report: CommentSignalReport;
       if (args.path && args.changedOnly === false) {
         const path = args.path;
-        if (path.endsWith("/") || !/\.[a-zA-Z0-9]+$/.test(path)) {
+        if (isDirectoryTargetPath(worktree, path)) {
           const entries: CheckFileEntry[] = [];
           const filePaths = (deps.directoryResolver ? deps.directoryResolver(worktree, path) : null) ?? [];
           for (const fp of filePaths) {
@@ -229,7 +229,7 @@ export function createCommentSignalBaselineTool(deps: CommentSignalToolDeps) {
         if (args.path) opts.path = args.path;
         // changed-only 政策判定 canonical 化（symlink 別名現形）。
         opts.worktree = worktree;
-        report = checkChangedFiles({ sessionID, modifiedFiles, lastReport: null, warnings: [] }, resolver, opts);
+        report = checkChangedFiles({ sessionID, modifiedFiles, lastReport: null, fileReports: {}, warnings: [] }, resolver, opts);
       }
 
       // 構造快照
@@ -566,7 +566,7 @@ export function createCommentSignalOnlyNewTool(deps: CommentSignalToolDeps) {
       let report: CommentSignalReport;
       if (args.path && args.changedOnly === false) {
         const path = args.path;
-        if (path.endsWith("/") || !/\.[a-zA-Z0-9]+$/.test(path)) {
+        if (isDirectoryTargetPath(worktree, path)) {
           const entries: CheckFileEntry[] = [];
           const filePaths = (deps.directoryResolver ? deps.directoryResolver(worktree, path) : null) ?? [];
           for (const fp of filePaths) {
@@ -595,7 +595,7 @@ export function createCommentSignalOnlyNewTool(deps: CommentSignalToolDeps) {
         if (args.path) opts.path = args.path;
         // changed-only 政策判定 canonical 化（symlink 別名現形）。
         opts.worktree = worktree;
-        report = checkChangedFiles({ sessionID, modifiedFiles, lastReport: null, warnings: [] }, resolver, opts);
+        report = checkChangedFiles({ sessionID, modifiedFiles, lastReport: null, fileReports: {}, warnings: [] }, resolver, opts);
       }
 
       // 套用 suppression（不刪除；只標記）

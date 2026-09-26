@@ -11,6 +11,17 @@ import type { CommentSignalStore } from "./state.ts";
 export type { CommentSignalStore };
 
 /**
+ * 取今日 YYYY-MM-DD（UTC 日界）。
+ *
+ * production 的 `buildDeps` 每次建依賴時呼叫，讓 EXPIRED_COMMENT／
+ * OVERDUE_COMMENT 以真實今天判定；測試可傳固定 Date 鎖定行為。
+ * 各工具 `today` 未填時的 `"1970-01-01"` fallback 保留（純函式測試隔離用）。
+ */
+export function currentDayString(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/**
  * 7 個 tool factory 共同的依賴注入。
  *   - `sourceResolver`：給定 (worktree, filePath) 回傳 source 或 null。
  *     `null` 表示該檔案無法讀取（不存在／已刪除／權限不足），此時
@@ -33,7 +44,8 @@ export interface CommentSignalToolDeps {
   directoryResolver?(worktree: string, dirPath: string): string[] | null;
   /** Inspect directory listing 語意類別；回傳 null 表示目錄不存在／不是資料夾。 */
   directoryInspector?(worktree: string, dirPath: string): string | null;
-  /** today 字串（YYYY-MM-DD）。 */
+  /** today 字串（YYYY-MM-DD）。production 由 buildDeps 注入真實今天；
+   *  未填時各工具退回 "1970-01-01"（純函式測試隔離用）。 */
   today?: string;
   /** 本次工具呼叫的工作階段位置；拿不到時退回外掛實例的位置。 */
   resolveRoot(toolCtx: Pick<ToolExecutionContext, "sessionID">): Promise<string>;

@@ -31,7 +31,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 import { atomicWriteFileWithOps } from "../../kit/atomic-write.ts";
-import { assertContainedPath, isInsideWorktree } from "../../kit/path-guard.ts";
+import { assertContainedPath, isInsideWorktree, isUnsafeRoot } from "../../kit/path-guard.ts";
 import { withContentWriteLock } from "../../kit/write-lock.ts";
 import { resolveGlobalConfigDir, resolveGlobalUltraworkDir } from "../../settings/paths.ts";
 
@@ -67,9 +67,26 @@ function defaultPersonalRoots(): DefaultPersonalRoots {
   };
 }
 
+// ─── Unsafe root 判定 ──────────────────────────────────────────
+
+/**
+ * 判斷路徑是否屬於「unsafe root」：落在這裡代表寫入範圍已經不是正常的
+ * 專案／設定子目錄，讀寫一視同仁拒絕。
+ *
+ * 系統關鍵目錄與家目錄本身的判定直接沿用 kit 的同一份實作，不在此複製
+ * 黑名單（家目錄含在 kit 判定內：設定把 personal／agents 目錄誤寫成 `~`
+ * 時，寫入會直接落在家目錄根下）。
+ */
+export function isUnsafeSkillerRoot(path: string): boolean {
+  return isUnsafeRoot(path);
+}
+
 /** skiller `.ultrawork` I/O 的嚴格 containment；外部 symlink 一律拒絕。 */
 export function assertSafeSkillerPath(targetPath: string): string {
   const target = resolve(targetPath);
+  if (isUnsafeSkillerRoot(target)) {
+    throw new Error(`Skiller path guard: refusing unsafe root: ${targetPath}`);
+  }
   const marker = `${sep}.ultrawork${sep}`;
   const markerIndex = target.indexOf(marker);
   if (markerIndex < 0) return target;
@@ -319,6 +336,43 @@ function wildcardMatches(pattern: string, value: string): boolean {
   return new RegExp(`^${source}$`).test(value);
 }
 
+/** V2 `permissions` 陣列的 skill 路由探針：與 V1 共用同一個 probe pattern。 */
+const PERSONAL_ROUTE_PROBE = "personal-probe-capability";
+
+type PersonalRouteEffect = "allow" | "ask" | "deny" | "none" | "invalid";
+
+/**
+ * 以 @opencode/schema 的 Permission.Rule 語意評估 V2 `permissions` 陣列：
+ * action 為 skill（或涵蓋一切的 `*`）且 resource 命中 personal 通配時，
+ * 以最後一條命中的 effect 為準（與 V1 的 last-match 一致）。
+ */
+function v2PersonalRouteEffect(data: Record<string, unknown>): PersonalRouteEffect {
+  const permissions = data["permissions"];
+  if (permissions === undefined) return "none";
+  if (!Array.isArray(permissions)) return "invalid";
+  let last: PersonalRouteEffect = "none";
+  for (const item of permissions) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return "invalid";
+    const rule = item as Record<string, unknown>;
+    if (typeof rule.action !== "string" || typeof rule.resource !== "string" || typeof rule.effect !== "string") {
+      return "invalid";
+    }
+    if ((rule.action === "skill" || rule.action === "*") && wildcardMatches(rule.resource, PERSONAL_ROUTE_PROBE)) {
+      if (rule.effect !== "allow" && rule.effect !== "ask" && rule.effect !== "deny") return "invalid";
+      last = rule.effect;
+    }
+  }
+  return last;
+}
+
+/** V1 `permission.skill` map 是否存在（用於 mixed 形狀判定）。 */
+function hasV1SkillMap(data: Record<string, unknown>): boolean {
+  const permission = data["permission"];
+  if (!permission || typeof permission !== "object" || Array.isArray(permission)) return false;
+  const skill = (permission as Record<string, unknown>)["skill"];
+  return !!skill && typeof skill === "object" && !Array.isArray(skill);
+}
+
 /**
  * 檢查 agents/<agent>.md 是否讓 personal namespace skill 解析得到可載入的路由。
  *
@@ -334,16 +388,22 @@ function wildcardMatches(pattern: string, value: string): boolean {
  * - global fallback 僅讀取固定 <globalRoot>/agents/<agent>.md。
  */
 export function agentHasPersonalAskRoute(projectRoot: string, agent: string, deps?: SkillerDeps): boolean {
+  // unsafe 的 project root 不讀任何檔案，直接 fail closed。
+  if (isUnsafeSkillerRoot(projectRoot)) return false;
   const hasAskRoute = (raw: string): boolean => {
     const fm = parseFrontmatter(raw);
     if (!fm.ok) return false;
+    // V1／V2 並存時不猜哪一邊才是真相，一律 fail closed。
+    if ("permissions" in fm.data && hasV1SkillMap(fm.data)) return false;
+    const v2 = v2PersonalRouteEffect(fm.data);
+    if (v2 !== "none") return v2 === "ask" || v2 === "allow";
     const permission = fm.data.permission;
     if (!permission || typeof permission !== "object" || Array.isArray(permission)) return false;
     const skill = (permission as Record<string, unknown>).skill;
     if (!skill || typeof skill !== "object" || Array.isArray(skill)) return false;
     return Object.entries(skill as Record<string, unknown>).some(
       ([pattern, action]) =>
-        pattern.includes("*") && wildcardMatches(pattern, "personal-probe-capability") && (action === "ask" || action === "allow"),
+        pattern.includes("*") && wildcardMatches(pattern, PERSONAL_ROUTE_PROBE) && (action === "ask" || action === "allow"),
     );
   };
 
@@ -357,8 +417,10 @@ export function agentHasPersonalAskRoute(projectRoot: string, agent: string, dep
     if (code !== "ENOENT") return false;
   }
 
-  // 2) Fallback 到 V2 全域設定資料夾下的 agents root，避免任意路徑注入
+  // 2) Fallback 到 V2 全域設定資料夾下的 agents root，避免任意路徑注入；
+  // agents root 本身 unsafe 時不讀，直接 fail closed。
   const globalAgentsRoot = resolveAgentsRoot(deps);
+  if (isUnsafeSkillerRoot(globalAgentsRoot)) return false;
   let rawGlobal: string;
   try {
     rawGlobal = readFileSync(join(globalAgentsRoot, `${agent}.md`), "utf-8");
@@ -528,12 +590,19 @@ export function ensureScopedFixedRoot(
   context?: ToolExecutionContext,
 ): GuardResult<string> {
   const lexicalRoot = resolve(rootPath);
+  if (isUnsafeSkillerRoot(lexicalRoot)) {
+    return { ok: false, code: "UNSAFE_ROOT", message: "固定 root 是不安全路徑（unsafe root），拒絕讀寫" };
+  }
   if (scope !== "project") assertSafeSkillerPath(lexicalRoot);
 
   let anchorReal: string | null = null;
   if (scope === "project") {
+    const projectRoot = resolve(deps.resolveProjectRoot(context));
+    if (isUnsafeSkillerRoot(projectRoot)) {
+      return { ok: false, code: "UNSAFE_ROOT", message: "project root 是不安全路徑（unsafe root），拒絕讀寫" };
+    }
     try {
-      anchorReal = realpathSync(resolve(deps.resolveProjectRoot(context)));
+      anchorReal = realpathSync(projectRoot);
     } catch {
       return { ok: false, code: "UNKNOWN_ROOT", message: "無法解析 project root" };
     }
@@ -1204,25 +1273,45 @@ export function locateSkillDir(
   return { ok: true, value: { kind, dir: guard.value, rootReal: rootGuard.value, rootLexical } };
 }
 
-// ─── Managed agent 路由（agents/*.md permission.skill exact 行） ──
+// ─── Managed agent 路由（agents/*.md 的 skill 路由行）────────────
 
 /**
- * managed 路由閉環共用的 agent 檔行級編輯器。
+ * managed 路由閉環共用的 agent 檔行級編輯器，同時支援兩種 frontmatter 形狀：
  *
- * 只動既有 `permission.skill` 區塊內的單行插入／移除，frontmatter 其他
- * 內容與正文逐字保留（含原始行尾 LF／CRLF）；結構異常（缺 frontmatter、
- * 缺 skill 區塊、縮排不符預期、孤立 CR、混合行尾）一律 fail closed 回報
+ * - V1：`permission:`（單數）底下的 `  skill:` 映射，條目為 4 空格
+ *   `key: value`。既有行為一字不變。
+ * - V2：`permissions:` 陣列，元素為 `{action, resource, effect}`。插入的是
+ *   一整個序列項目（三行），不是單行。
+ *
+ * 兩者都只動既有結構內的最小範圍，frontmatter 其他內容與正文逐字保留
+ * （含原始行尾 LF／CRLF）。結構異常（缺 frontmatter、缺 skill 區塊、縮排
+ * 不符預期、孤立 CR、混合行尾、V1／V2 並存）一律 fail closed 回報
  * skipped/malformed，不猜測結構、不建立結構。
  *
- * 區塊邊界：第一個空行即視為區塊結束，其後的 key 行不屬於區塊；
+ * V1 區塊邊界：第一個空行即視為區塊結束，其後的 key 行不屬於區塊；
  * 空行本身保留。插入位置：最後一條 glob 之後、按 key 排序應屬的位置，
  * 保證後面沒有 glob 能在 last-match 下蓋掉這條 exact allow。
+ *
+ * V2 插入位置：最後一個 `action: skill` 項目之後，讓 skill 規則維持同一段
+ * 連續區塊（與維護者手動維護的排版一致）。V2 的比對一律採 schema 語意的
+ * 「最後一條命中者勝」，所以放在 skill 區塊尾端的 exact allow 不會被前面
+ * 的 `resource: "*" deny` 蓋掉。
  */
 
 const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKILL_BLOCK_KEY_LINE = "  skill:";
 const SKILL_ENTRY_PATTERN = /^    ("[^"]+"|[^\s:]+):\s*(\S+)\s*$/;
 const DEDENTED_LINE_PATTERN = /^ {0,2}\S/;
+
+// V2 形狀：`permissions:` 頂層鍵 + block sequence 項目。刻意不綁死單一排版——
+// 縮排寬度自檔內既有項目推導，鍵順序與引號形式由比對時正規化。
+const V2_PERMISSIONS_KEY_PATTERN = /^permissions:(.*)$/;
+const V2_ITEM_START_PATTERN = /^( *)- ([A-Za-z_][A-Za-z0-9_]*):[ \t]+(\S+)$/;
+const V2_ITEM_FIELD_PATTERN = /^( +)([A-Za-z_][A-Za-z0-9_]*):[ \t]+(\S+)$/;
+/** Permission.Rule 的欄位（@opencode/schema Permission.Rule）；多一個少一個都算異常。 */
+const V2_RULE_FIELDS: ReadonlySet<string> = new Set(["action", "resource", "effect"]);
+/** 縮排含 tab 一律 fail closed：YAML 不允許 tab 當結構縮排，猜不出意圖。 */
+const TAB_INDENT_PATTERN = /^[ ]*\t/;
 
 export type AgentSkillEditStatus =
   | "inserted"
@@ -1240,7 +1329,10 @@ export interface AgentSkillEdit {
   currentValue: string | null;
 }
 
-function splitFrontmatter(raw: string): { head: string; fmText: string; tail: string; eol: "\n" | "\r\n" } | null {
+/** frontmatter 切分結果：head／fmText／tail 都是原始 slice，重組時不重排。 */
+interface FrontmatterSplit { head: string; fmText: string; tail: string; eol: "\n" | "\r\n" }
+
+function splitFrontmatter(raw: string): FrontmatterSplit | null {
   // 孤立 CR（不屬於 CRLF 的一部分）一律 fail closed，不猜測行尾。
   if (/\r(?!\n)/.test(raw)) return null;
   const eol: "\n" | "\r\n" = raw.includes("\r\n") ? "\r\n" : "\n";
@@ -1292,11 +1384,161 @@ function splitFmLines(fmText: string): string[] {
   return fmText.split(/\r?\n/);
 }
 
-/** 插入 `    <skillName>: allow`；已存在同名 exact 行時冪等回報。 */
-export function insertAgentSkillAllow(raw: string, skillName: string): AgentSkillEdit {
-  const split = splitFrontmatter(raw);
-  if (!split) return { status: "malformed", content: null, currentValue: null };
-  const lines = splitFmLines(split.fmText);
+// ─── V2 `permissions:` 序列 ──────────────────────────────────
+
+/** 一個已解析的 V2 序列項目，以及它在 fm 行陣列中的行範圍。 */
+interface V2RuleItem {
+  action: string;
+  resource: string;
+  effect: string;
+  /** 項目的第一行（含 `- `）在 fm 行陣列中的索引。 */
+  startIdx: number;
+  /** 項目的最後一行（含）在 fm 行陣列中的索引（獨佔）。 */
+  endIdx: number;
+}
+
+interface V2PermissionsSpan {
+  keyIdx: number;
+  items: V2RuleItem[];
+  /** `permissions: []` 這種 flow 空序列：鍵行本身帶內容，沒有項目行。 */
+  emptyInline: boolean;
+  /** 序列項目的縮排（`- ` 前面的空格數）；空序列時為 null，插入時取預設值。 */
+  dashIndent: string | null;
+}
+
+type V2ParseResult = { ok: true; span: V2PermissionsSpan } | { ok: false };
+
+/** 正規化 YAML 純量：去掉成對的引號，讓 `"personal-*"` 與 `personal-*` 視為同一個值。 */
+function unquoteScalar(value: string): string {
+  if (value.length >= 2) {
+    const first = value[0];
+    const last = value[value.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) return value.slice(1, -1);
+  }
+  return value;
+}
+
+/**
+ * 從 from 往後找第一個非空行；全是空行時回 lines.length。
+ * 序列項目之間可以夾空行，掃描必須跨過它們，不能只掃前半段就下結論。
+ */
+function nextMeaningfulLineIndex(lines: string[], from: number): number {
+  let i = from;
+  while (i < lines.length && lines[i]!.trim().length === 0) i += 1;
+  return i;
+}
+
+/**
+ * 解析 V2 `permissions:` 序列。任一處看不懂就回 `{ok:false}`，呼叫端一律
+ * 當 malformed fail closed——不猜結構、不替使用者重排 YAML。
+ *
+ * 接受範圍（其餘全部拒絕）：
+ *   - 鍵行 `permissions:` 或 `permissions: []`；`permissions: <其他>` 拒絕。
+ *   - block sequence 項目 `- key: value` 加同寬度+2 的續行 `key: value`。
+ *   - 縮排寬度自第一個項目推導，全部項目一致；含 tab 一律拒絕。
+ *   - 每個項目的欄位集合恰為 {action, resource, effect}，不重複。
+ *   - 項目在空行或下一個頂層鍵處結束；序列之外無法解讀的縮排一律拒絕。
+ */
+function parseV2Permissions(lines: string[], keyIdx: number): V2ParseResult {
+  const keyRest = V2_PERMISSIONS_KEY_PATTERN.exec(lines[keyIdx]!)![1]!.trim();
+  let cursor = keyIdx + 1;
+  let emptyInline = false;
+  if (keyRest === "[]") {
+    emptyInline = true;
+  } else if (keyRest !== "") {
+    return { ok: false };
+  }
+
+  const items: V2RuleItem[] = [];
+  let dashIndent: string | null = null;
+  for (;;) {
+    // 項目之間的空行：跳過並繼續往後掃，不能在這裡收尾。
+    cursor = nextMeaningfulLineIndex(lines, cursor);
+    if (cursor >= lines.length) break;
+    const line = lines[cursor]!;
+    // 下一個頂層鍵：序列正常結束。縮排（含 tab）一律視為序列內的行。
+    if (!/^\s/.test(line)) break;
+    if (TAB_INDENT_PATTERN.test(line)) return { ok: false };
+    const start = V2_ITEM_START_PATTERN.exec(line);
+    if (!start) return { ok: false };
+    const indent = start[1]!;
+    if (dashIndent === null) dashIndent = indent;
+    else if (indent !== dashIndent) return { ok: false };
+
+    const fields = new Map<string, string>();
+    fields.set(start[2]!, unquoteScalar(start[3]!));
+    const startIdx = cursor;
+    cursor += 1;
+    // 續行必須剛好比 `- ` 多兩格；少一格是換項、多一格是縮排錯誤。
+    const fieldIndent = `${indent}  `;
+    for (;;) {
+      if (cursor >= lines.length) break;
+      const cont = lines[cursor]!;
+      if (cont.trim().length === 0) {
+        const afterBlank = nextMeaningfulLineIndex(lines, cursor);
+        if (afterBlank >= lines.length) break;
+        const nextLine = lines[afterBlank]!;
+        if (!/^\s/.test(nextLine)) break;
+        const nextStart = V2_ITEM_START_PATTERN.exec(nextLine);
+        if (nextStart && nextStart[1] === indent) break;
+        return { ok: false };
+      }
+      if (!/^\s/.test(cont)) break;
+      if (TAB_INDENT_PATTERN.test(cont)) return { ok: false };
+      // 下一個項目的第一行：交回外層迴圈處理。
+      if (V2_ITEM_START_PATTERN.test(cont)) break;
+      const field = V2_ITEM_FIELD_PATTERN.exec(cont);
+      if (!field) return { ok: false };
+      if (field[1] !== fieldIndent) return { ok: false };
+      if (!V2_RULE_FIELDS.has(field[2]!)) return { ok: false };
+      // 重複欄位無法判定哪個才是真相。
+      if (fields.has(field[2]!)) return { ok: false };
+      fields.set(field[2]!, unquoteScalar(field[3]!));
+      cursor += 1;
+    }
+    // 欄位數與 schema 的 Permission.Rule 不符就是結構異常。
+    if (fields.size !== V2_RULE_FIELDS.size) return { ok: false };
+    items.push({
+      action: fields.get("action")!,
+      resource: fields.get("resource")!,
+      effect: fields.get("effect")!,
+      startIdx,
+      endIdx: cursor,
+    });
+  }
+
+  if (emptyInline && items.length > 0) return { ok: false };
+  return { ok: true, span: { keyIdx, items, emptyInline, dashIndent } };
+}
+
+/** 找出 V2 `permissions:` 頂層鍵；0 個回 -1，1 個以上回 -2（結構歧義）。 */
+function findV2PermissionsKey(lines: string[]): number {
+  let found = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!V2_PERMISSIONS_KEY_PATTERN.test(lines[i]!)) continue;
+    if (found !== -1) return -2;
+    found = i;
+  }
+  return found;
+}
+
+/** 建立一個 V2 skill 路由項目的三行文字，縮排沿用檔內既有寬度。 */
+function renderV2SkillRule(dashIndent: string, resource: string): string[] {
+  const fieldIndent = `${dashIndent}  `;
+  return [
+    `${dashIndent}- action: skill`,
+    `${fieldIndent}resource: ${resource}`,
+    `${fieldIndent}effect: allow`,
+  ];
+}
+
+/** 組出套用編輯後的全文：head 與 tail 皆為原始 slice，只動目標行。 */
+function joinEdited(split: FrontmatterSplit, lines: string[]): string {
+  return `${split.head}${lines.join(split.eol)}${split.tail}`;
+}
+
+/** V1 形狀：插入 `    <skillName>: allow`；已存在同名 exact 行時冪等回報。 */
+function insertV1SkillAllow(split: FrontmatterSplit, lines: string[], skillName: string): AgentSkillEdit {
   let span: SkillBlockSpan | null;
   try {
     span = locateSkillBlock(lines);
@@ -1328,15 +1570,11 @@ export function insertAgentSkillAllow(raw: string, skillName: string): AgentSkil
   }
   const next = [...lines];
   next.splice(insertAt, 0, `    ${skillName}: allow`);
-  // 以原檔行尾重組：head 與 tail 皆為原始 slice，只動目標行。
-  return { status: "inserted", content: `${split.head}${next.join(split.eol)}${split.tail}`, currentValue: null };
+  return { status: "inserted", content: joinEdited(split, next), currentValue: null };
 }
 
-/** 移除 key 為 skillName 的 exact 行（無論值為 allow/ask/deny）。 */
-export function removeAgentSkillLine(raw: string, skillName: string): AgentSkillEdit {
-  const split = splitFrontmatter(raw);
-  if (!split) return { status: "malformed", content: null, currentValue: null };
-  const lines = splitFmLines(split.fmText);
+/** V1 形狀：移除 key 為 skillName 的 exact 行（無論值為 allow/ask/deny）。 */
+function removeV1SkillLine(split: FrontmatterSplit, lines: string[], skillName: string): AgentSkillEdit {
   let span: SkillBlockSpan | null;
   try {
     span = locateSkillBlock(lines);
@@ -1355,7 +1593,108 @@ export function removeAgentSkillLine(raw: string, skillName: string): AgentSkill
     return true;
   });
   if (currentValue === null) return { status: "absent", content: null, currentValue: null };
-  return { status: "removed", content: `${split.head}${next.join(split.eol)}${split.tail}`, currentValue };
+  return { status: "removed", content: joinEdited(split, next), currentValue };
+}
+
+/** V2 形狀：在最後一個 skill 項目之後插入 exact allow 項目。 */
+function insertV2SkillRule(split: FrontmatterSplit, lines: string[], skillName: string, keyIdx: number): AgentSkillEdit {
+  const parsed = parseV2Permissions(lines, keyIdx);
+  if (!parsed.ok) return { status: "malformed", content: null, currentValue: null };
+  const { items, emptyInline, dashIndent } = parsed.span;
+  let insertAt = parsed.span.keyIdx + 1;
+  for (const item of items) {
+    // `action: "*"` 也覆蓋 skill，插入體一定要跑到最後一種 action。
+    if (item.action !== "skill" && item.action !== "*") continue;
+    if (item.action === "skill" && item.resource === skillName) {
+      return { status: "already-present", content: null, currentValue: item.effect };
+    }
+    insertAt = item.endIdx;
+  }
+  // 沒有任何 skill 項目：不建立 skill 路由結構，交回 skipped。
+  if (items.length > 0 && !items.some((item) => item.action === "skill")) {
+    return { status: "skipped-no-skill-block", content: null, currentValue: null };
+  }
+  if (items.length === 0 && !emptyInline) {
+    return { status: "skipped-no-skill-block", content: null, currentValue: null };
+  }
+  const next = [...lines];
+  // `permissions: []` 沒有項目行，先把鍵行改成 block sequence 的起頭。
+  if (emptyInline) {
+    next[parsed.span.keyIdx] = "permissions:";
+    insertAt = parsed.span.keyIdx + 1;
+  }
+  next.splice(insertAt, 0, ...renderV2SkillRule(dashIndent ?? "  ", skillName));
+  return { status: "inserted", content: joinEdited(split, next), currentValue: null };
+}
+
+/** V2 形狀：移除 resource 等於 skillName 的 skill 項目（無論 effect）。 */
+function removeV2SkillRule(split: FrontmatterSplit, lines: string[], skillName: string, keyIdx: number): AgentSkillEdit {
+  const parsed = parseV2Permissions(lines, keyIdx);
+  if (!parsed.ok) return { status: "malformed", content: null, currentValue: null };
+  const { items } = parsed.span;
+  if (!items.some((item) => item.action === "skill")) {
+    return { status: "skipped-no-skill-block", content: null, currentValue: null };
+  }
+  const targets = items.filter((item) => item.action === "skill" && item.resource === skillName);
+  if (targets.length === 0) return { status: "absent", content: null, currentValue: null };
+  const drop = new Set<number>();
+  for (const item of targets) {
+    for (let i = item.startIdx; i < item.endIdx; i += 1) drop.add(i);
+  }
+  const next = lines.filter((_, idx) => !drop.has(idx));
+  // 同一個 resource 被重複宣告時全部移除，回報最後一個 effect。
+  return {
+    status: "removed",
+    content: joinEdited(split, next),
+    currentValue: targets[targets.length - 1]!.effect,
+  };
+}
+
+/**
+ * 判斷 frontmatter 屬於哪一種路由形狀。V1 與 V2 並存時回 "mixed"：
+ * 兩套結構的優先序無從得知，一律不猜。
+ */
+type RoutingShape = "v1" | "v2" | "mixed" | "none";
+
+function detectRoutingShape(lines: string[]): { shape: RoutingShape; v2KeyIdx: number } {
+  const v2KeyIdx = findV2PermissionsKey(lines);
+  const hasV1 = lines.includes(SKILL_BLOCK_KEY_LINE);
+  if (v2KeyIdx === -2) return { shape: "mixed", v2KeyIdx: -1 };
+  if (v2KeyIdx !== -1 && hasV1) return { shape: "mixed", v2KeyIdx: -1 };
+  if (v2KeyIdx !== -1) return { shape: "v2", v2KeyIdx };
+  if (hasV1) return { shape: "v1", v2KeyIdx: -1 };
+  return { shape: "none", v2KeyIdx: -1 };
+}
+
+/** 給預覽文字用：從原始內容判斷路由形狀，frontmatter 不完整時回 none。 */
+function routingShapeOf(raw: string): RoutingShape {
+  const split = splitFrontmatter(raw);
+  if (!split) return "none";
+  return detectRoutingShape(splitFmLines(split.fmText)).shape;
+}
+
+/** 插入 skill 路由：依 frontmatter 形狀走 V1 或 V2 編輯器。 */
+export function insertAgentSkillAllow(raw: string, skillName: string): AgentSkillEdit {
+  const split = splitFrontmatter(raw);
+  if (!split) return { status: "malformed", content: null, currentValue: null };
+  const lines = splitFmLines(split.fmText);
+  const { shape, v2KeyIdx } = detectRoutingShape(lines);
+  if (shape === "mixed") return { status: "malformed", content: null, currentValue: null };
+  if (shape === "v2") return insertV2SkillRule(split, lines, skillName, v2KeyIdx);
+  if (shape === "none") return { status: "skipped-no-skill-block", content: null, currentValue: null };
+  return insertV1SkillAllow(split, lines, skillName);
+}
+
+/** 移除 skill 路由：依 frontmatter 形狀走 V1 或 V2 編輯器。 */
+export function removeAgentSkillLine(raw: string, skillName: string): AgentSkillEdit {
+  const split = splitFrontmatter(raw);
+  if (!split) return { status: "malformed", content: null, currentValue: null };
+  const lines = splitFmLines(split.fmText);
+  const { shape, v2KeyIdx } = detectRoutingShape(lines);
+  if (shape === "mixed") return { status: "malformed", content: null, currentValue: null };
+  if (shape === "v2") return removeV2SkillRule(split, lines, skillName, v2KeyIdx);
+  if (shape === "none") return { status: "skipped-no-skill-block", content: null, currentValue: null };
+  return removeV1SkillLine(split, lines, skillName);
 }
 
 export type AgentRoutingFileStatus = "updated" | "already-present" | "absent" | "skipped" | "failed";
@@ -1383,8 +1722,29 @@ export function normalizeTargetAgents(raw: unknown): { ok: true; agents: string[
 /**
  * 在任何 mutation 之前預檢 targetAgents：名稱形狀＋檔案存在＋非 symlink。
  * 回傳第一個未知 agent；缺 skill 區塊不在此階段判定（edit 時回報 skipped）。
+ *
+ * agents root 落在 unsafe root 時直接拒絕：此時每個 `<agent>.md` 都會解析到
+ * 系統關鍵目錄或家目錄，逐一列檔案只會得到誤導的 ENOENT。
  */
+const UNSAFE_AGENTS_ROOT_REASON = "agents 目錄位於 unsafe root（系統根或家目錄），拒絕讀寫";
+
+/**
+ * unsafe agents root 的統一結果：每個目標都回 failed，不讀不寫。
+ * 讀寫一視同仁——唯讀的 preview 也不因為「只是讀」就放行。
+ */
+function unsafeAgentsRootResults(agentsRoot: string, agents: string[] | null): AgentRoutingFileResult[] {
+  const targets = agents ?? ["(scan)"];
+  return targets.map((agent) => ({
+    agent,
+    file: resolve(join(agentsRoot, `${agent}.md`)),
+    status: "failed" as const,
+    detail: UNSAFE_AGENTS_ROOT_REASON,
+  }));
+}
 export function prevalidateTargetAgents(agentsRoot: string, agents: string[]): { ok: true } | { ok: false; unknownAgent: string; reason: string } {
+  if (isUnsafeSkillerRoot(agentsRoot)) {
+    return { ok: false, unknownAgent: agents[0] ?? "(scan)", reason: UNSAFE_AGENTS_ROOT_REASON };
+  }
   for (const agent of agents) {
     const file = resolve(join(agentsRoot, `${agent}.md`));
     if (!isInsideWorktree(file, resolve(agentsRoot))) {
@@ -1442,7 +1802,7 @@ function editOneAgentFile(
   if (edit.status === "already-present") return { agent, file, status: "already-present", detail: `已存在（${edit.currentValue}），未重複插入` };
   if (edit.status === "absent") return { agent, file, status: "absent", detail: "沒有該 skill 的 exact 行，無需變更" };
   if (edit.status === "skipped-no-skill-block") {
-    return { agent, file, status: "skipped", detail: "缺少 permission.skill 區塊，不建立結構" };
+    return { agent, file, status: "skipped", detail: "缺少 skill 路由規則（V1 permission.skill 區塊或 V2 permissions 的 skill 項目），不建立結構" };
   }
   if (edit.status === "malformed" || edit.content === null) {
     return { agent, file, status: "skipped", detail: "frontmatter 結構異常，fail closed 不寫入" };
@@ -1470,6 +1830,7 @@ export function applyAgentSkillRouting(
   agents: string[] | null,
   deps?: SkillerDeps,
 ): AgentRoutingFileResult[] {
+  if (isUnsafeSkillerRoot(agentsRoot)) return unsafeAgentsRootResults(agentsRoot, agents);
   let targets = agents;
   if (targets === null) {
     let entries: string[];
@@ -1496,6 +1857,14 @@ export function previewAgentSkillRouting(
   mode: "insert" | "remove",
   agents: string[] | null,
 ): Array<{ agent: string; file: string; planned: AgentRoutingFileStatus; detail?: string }> {
+  if (isUnsafeSkillerRoot(agentsRoot)) {
+    return unsafeAgentsRootResults(agentsRoot, agents).map((entry) => ({
+      agent: entry.agent,
+      file: entry.file,
+      planned: "failed" as const,
+      detail: entry.detail,
+    }));
+  }
   let targets = agents;
   if (targets === null) {
     let entries: string[];
@@ -1518,17 +1887,24 @@ export function previewAgentSkillRouting(
       return { agent, file, planned: "failed" as const, detail: `讀取失敗：${(error as Error).message}` };
     }
     const edit = mode === "insert" ? insertAgentSkillAllow(raw, skillName) : removeAgentSkillLine(raw, skillName);
+    // 預覽文字要跟實際形狀一致：對 V2 檔案說「插入 exact 行」會誤導。
+    const isV2 = routingShapeOf(raw) === "v2";
     switch (edit.status) {
       case "inserted":
-        return { agent, file, planned: "updated" as const, detail: `將插入 \`    ${skillName}: allow\`` };
+        return {
+          agent,
+          file,
+          planned: "updated" as const,
+          detail: isV2 ? `將插入 skill 項目（resource: ${skillName}、effect: allow）` : `將插入 \`    ${skillName}: allow\``,
+        };
       case "removed":
-        return { agent, file, planned: "updated" as const, detail: `將移除 exact 行（現值 ${edit.currentValue}）` };
+        return { agent, file, planned: "updated" as const, detail: `將移除該 skill 路由規則（現值 ${edit.currentValue}）` };
       case "already-present":
         return { agent, file, planned: "already-present" as const, detail: "已存在，不重複插入" };
       case "absent":
-        return { agent, file, planned: "absent" as const, detail: "沒有該 skill 的 exact 行" };
+        return { agent, file, planned: "absent" as const, detail: "沒有該 skill 的路由規則" };
       case "skipped-no-skill-block":
-        return { agent, file, planned: "skipped" as const, detail: "缺少 permission.skill 區塊" };
+        return { agent, file, planned: "skipped" as const, detail: "缺少 skill 路由規則（V1 permission.skill 區塊或 V2 permissions 的 skill 項目）" };
       default:
         return { agent, file, planned: "skipped" as const, detail: "frontmatter 結構異常" };
     }

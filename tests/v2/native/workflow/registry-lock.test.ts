@@ -25,6 +25,42 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+type WorkflowFake = Awaited<ReturnType<typeof setupWorkflow>>;
+
+/**
+ * 並行寫入 helper：CONTENT_LOCK_BUSY 是可預期的瞬時併發結果（不是失敗），
+ * 只重試回 BUSY 的那一路，有上界。BUSY 保證沒進臨界區，所以重試不會重複
+ * 寫入；最終的狀態斷言一個沒少（沒有放寬測試）。這樣並行測試不再假設
+ * 「競爭一定在預設約 350ms 重試視窗內解決」，高負載下也不會誤判。
+ */
+async function callToolRetryBusy(
+  fake: WorkflowFake,
+  name: string,
+  input: Record<string, unknown>,
+  maxAttempts = 15,
+): Promise<any> {
+  let last: any = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    last = await callTool(fake, name, input);
+    if (last.ok !== false || last.code !== "CONTENT_LOCK_BUSY") return last;
+  }
+  return last;
+}
+
+/** transact 版：BUSY 才重試，其他錯誤原樣拋出，同樣有上界。 */
+async function transactRetryBusy<T>(fn: () => Promise<T>, maxAttempts = 15): Promise<T> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if ((error as { code?: string })?.code !== "CONTENT_LOCK_BUSY") throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 async function occupy(root: string, name: string): Promise<void> {
   const dir = join(root, ".ultrawork/cache/locks");
   await mkdir(dir, { recursive: true });
@@ -35,7 +71,7 @@ describe("workflow registry 寫入鎖", () => {
   test("工具層並行建立 task 保留 t1／t2", async () => {
     const root = await tempRoot();
     const fake = await setupWorkflow(root);
-    await Promise.all(["t1", "t2"].map((taskId) => callTool(fake, "task-state-sync", {
+    await Promise.all(["t1", "t2"].map((taskId) => callToolRetryBusy(fake, "task-state-sync", {
       event: "create", taskId, to: "NEW", title: taskId, owner: "ultra", priority: "normal",
     })));
     const registry = JSON.parse(await readFile(join(root, ".ultrawork/tasks.json"), "utf8"));
@@ -46,7 +82,7 @@ describe("workflow registry 寫入鎖", () => {
   test("工具層並行建立 plan 保留 p1／p2", async () => {
     const root = await tempRoot();
     const fake = await setupWorkflow(root);
-    await Promise.all(["p1", "p2"].map((planId) => callTool(fake, "plan-state-sync", {
+    await Promise.all(["p1", "p2"].map((planId) => callToolRetryBusy(fake, "plan-state-sync", {
       event: "create", planId, title: planId,
     })));
     const registry = JSON.parse(await readFile(join(root, ".ultrawork/plans.json"), "utf8"));
@@ -68,8 +104,8 @@ describe("workflow registry 寫入鎖", () => {
     }
     await callTool(fake, "task-state-sync", { event: "complete", taskId: "t1" });
     const [reconcile, created] = await Promise.all([
-      callTool(fake, "plan-progress-reconcile", { planId: "p1", mode: "apply" }),
-      callTool(fake, "task-state-sync", { event: "create", taskId: "t2", to: "NEW", title: "T2", owner: "ultra", priority: "normal" }),
+      callToolRetryBusy(fake, "plan-progress-reconcile", { planId: "p1", mode: "apply" }),
+      callToolRetryBusy(fake, "task-state-sync", { event: "create", taskId: "t2", to: "NEW", title: "T2", owner: "ultra", priority: "normal" }),
     ]);
     expect(reconcile.ok).toBe(true);
     expect(created.ok).toBe(true);
@@ -80,12 +116,17 @@ describe("workflow registry 寫入鎖", () => {
     await fake.registration?.dispose();
   });
 
-  test("plans.json／tasks.json 共用 registry.lock，忙碌時停止寫入", async () => {
+  test("plans.json／tasks.json 共用 registry.lock，忙碌時回 CONTENT_LOCK_BUSY 外框且停止寫入", async () => {
     const root = await tempRoot();
     await occupy(root, "registry.lock");
     const fake = await setupWorkflow(root);
-    await expect(callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "測試" }))
-      .rejects.toThrow("content-write lock 被占用");
+    const result = await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "測試" });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("CONTENT_LOCK_BUSY");
+    expect(JSON.stringify(result)).toContain("unlockStale");
+    // 忙碌時什麼都沒寫：plans.json 沒被建出來，別人的鎖沒被動。
+    expect(existsSync(join(root, ".ultrawork/plans.json"))).toBe(false);
+    expect(readFileSync(join(root, ".ultrawork/cache/locks/registry.lock"), "utf-8")).toContain("external");
     await fake.registration?.dispose();
   });
 
@@ -489,22 +530,25 @@ describe("workflow registry 寫入鎖", () => {
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
     const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS);
     const toolContext = fakeV2ToolContext();
-    await Promise.all(["t1", "t2"].map((taskId) => runtime.transactRegistries(toolContext, (draft, control) => {
+    await Promise.all(["t1", "t2"].map((taskId) => transactRetryBusy(() => runtime.transactRegistries(toolContext, (draft, control) => {
       draft.tasks.tasks[taskId] = { taskId } as never;
       control.commit();
-    })));
+    }))));
     const tasks = JSON.parse(await readFile(join(root, ".ultrawork/tasks.json"), "utf8"));
     expect(Object.keys(tasks.tasks).sort()).toEqual(["t1", "t2"]);
   });
 
-  test("state.md 使用 state.lock，忙碌時不覆寫狀態投影", async () => {
+  test("state.md 使用 state.lock，忙碌時回 CONTENT_LOCK_BUSY 外框且不覆寫狀態投影", async () => {
     const root = await tempRoot();
     const fake = await setupWorkflow(root);
     await callTool(fake, "task-state-sync", { event: "create", taskId: "seed", to: "NEW", title: "初始化", owner: "ultra", priority: "normal" });
     await occupy(root, "state.lock");
-    await expect(callTool(fake, "task-state-sync", {
+    const result = await callTool(fake, "task-state-sync", {
       event: "create", taskId: "t1", to: "NEW", title: "測試", owner: "ultra", priority: "normal",
-    })).rejects.toThrow("content-write lock 被占用");
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("CONTENT_LOCK_BUSY");
+    expect(readFileSync(join(root, ".ultrawork/cache/locks/state.lock"), "utf-8")).toContain("external");
     await fake.registration?.dispose();
   });
 });

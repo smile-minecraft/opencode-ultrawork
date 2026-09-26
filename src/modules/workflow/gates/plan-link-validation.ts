@@ -3,11 +3,12 @@
  *
  * 角色：
  *   - Plan ↔ Task 連結完整性驗證的 **固定格式 helper module**：
- *     parent/dependsOn/blockedBy 引用驗證、cycle 偵測、專案記憶更新階段 更新紀錄 extraction 判定、
+ *     parent/dependsOn/blockedBy 引用驗證、cycle 偵測、
  *     plan-level inconsistency 彙整，皆由本模組提供。
  *     `validateTaskLinkReferences` / `collectPlanInconsistencies` /
- *     `hasReceiptExtractions` / `taskDependsOnPlanSection` /
- *     `type LinkInconsistency` 等符號。
+ *     `taskDependsOnPlanSection` / `type LinkInconsistency` 等符號。
+ *     收據 extraction 判定只有 memory 模組一份實作（`hasReceiptExtractions`），
+ *     本模組不再保留複本，需要時由呼叫端走 memory 模組介面。
  *   - **型別來源**：本檔案內部 structural duplicate 介面
  *     （`Task` / `TasksRegistry` / `ProjectBinding` / `MemoryReceipt` /
  *     `Plan` / `PlanDependencyGraphEdge` / `PlanDependencyGraphNode`）已
@@ -247,15 +248,6 @@ export function taskDependsOnPlanSection(task: Task, _planId: string): boolean {
   if (task.taskContentMode === "file") return false;
   if (task.taskContentMode === "hybrid" && task.contentRef && task.contentRef.includes("tasks/")) return false;
   return true;
-}
-
-/**
- * 判斷 memory 更新紀錄 是否包含 extraction / cards 證據。
- * 用於 專案記憶更新階段 更新紀錄 gate 與 task state sync complete 流程。
- */
-export function hasReceiptExtractions(receipt: MemoryReceipt): boolean {
-  return [receipt.extractionResults, receipt.extractions, receipt.createdCards, receipt.updatedCards]
-    .some((value) => Array.isArray(value) && value.length > 0);
 }
 
 /**

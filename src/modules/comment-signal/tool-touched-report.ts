@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { defineTool } from "../../kit/define-tool.ts";
 import { jsonResult } from "../../kit/json.ts";
-import type { CommentSignalReport, HighRiskItem, Violation } from "./types.ts";
+import type { CommentSignalReport, Violation } from "./types.ts";
 import type { CommentSignalWarning } from "./state.ts";
 import type { CommentSignalToolDeps } from "./tool-deps.ts";
 
@@ -46,6 +46,9 @@ interface TouchedReport {
  *
  * 參數：
  *   - `sessionID`：可選；未指定時 fallback 為工具執行 context 的 sessionID。
+ *
+ * 每檔狀態來自該檔的最新 per-file 報告（跟結案 gate 同一聚合來源），
+ * 不再從單一 aggregate 反推：乾淨檔顯示 checked=true，修好後計數即時歸零。
  */
 export function createCommentSignalTouchedReportTool(deps: CommentSignalToolDeps) {
   return defineTool({
@@ -58,17 +61,24 @@ export function createCommentSignalTouchedReportTool(deps: CommentSignalToolDeps
       const modifiedFiles = await deps.store.getModifiedFiles(sessionID);
       const lastReport = await deps.store.getLastReport(sessionID);
       const warnings = await deps.store.getWarnings(sessionID);
+      const fileReports = await deps.store.getFileReports(sessionID);
 
       const perFile: PerFileStatus[] = modifiedFiles.map((filePath) => {
-        const checked = lastReport?.violations.some((v: Violation) => v.filePath === filePath) ?? false;
-        const highRiskCount = lastReport?.highRisk.filter((h: HighRiskItem) => h.filePath === filePath).length ?? 0;
-        const blockingCount = lastReport?.violations.filter(
-          (v: Violation) => v.filePath === filePath && v.severity === "blocking",
-        ).length ?? 0;
-        const warningCount = lastReport?.violations.filter(
-          (v: Violation) => v.filePath === filePath && v.severity === "warning",
-        ).length ?? 0;
-        return { filePath, checked, highRiskCount, blockingCount, warningCount };
+        const fileReport = fileReports[filePath];
+        if (!fileReport) {
+          return { filePath, checked: false, highRiskCount: 0, blockingCount: 0, warningCount: 0 };
+        }
+        return {
+          filePath,
+          checked: true,
+          highRiskCount: fileReport.highRisk.length,
+          blockingCount: fileReport.violations.filter(
+            (v: Violation) => v.severity === "blocking",
+          ).length,
+          warningCount: fileReport.violations.filter(
+            (v: Violation) => v.severity === "warning",
+          ).length,
+        };
       });
 
       const report: TouchedReport = {

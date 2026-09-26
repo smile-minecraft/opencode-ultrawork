@@ -191,7 +191,7 @@ export function createPlanNextTool(runtime: UltraworkRuntimeContext) {
         ),
         completionStats: collectCompletionStats(plan, taskRegistry),
         projection,
-      }, null, 2);
+      });
 
       function collectCompletionStats(p: typeof plan, tr: typeof taskRegistry) {
         // 用 resolver 計算 tombstoned / live / missing，供 caller debug。

@@ -15,7 +15,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   MIGRATION_MARKER_FILE,
@@ -67,11 +67,20 @@ describe("舊資料位置是斷鏈 symlink", () => {
 
   test("斷鏈 symlink 修好成真目錄後重跑 → 補完並寫上標記", () => {
     const root = tempRoot("uw-migrate-project-");
-    makeLink(root, ".opencode/plans", join(root, "external-storage", "plans"));
+    const link = makeLink(root, ".opencode/plans", join(root, "external-storage", "plans"));
     migrateProjectData({ root, now });
     expect(existsSync(marker(root))).toBe(false);
 
+    // 修好方式是把 symlink 換成真目錄：只把外部目標補回來（symlink 還在）
+    // 仍然拒絕，因為跟隨它會把外部資料讀進來。
     writeFile(root, "external-storage/plans/tasks.json", '{"version":"1"}\n');
+    const stillLink = migrateProjectData({ root, now });
+    expect(stillLink.ok).toBe(false);
+    expect(existsSync(marker(root))).toBe(false);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+
+    rmSync(link, { force: true });
+    writeFile(root, ".opencode/plans/tasks.json", '{"version":"1"}\n');
     const retry = migrateProjectData({ root, now });
 
     expect(retry.ok).toBe(true);

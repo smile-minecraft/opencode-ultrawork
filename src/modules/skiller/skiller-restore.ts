@@ -74,7 +74,7 @@ export function createSkillerRestoreTool(deps: SkillerDeps) {
   return defineTool({
     name: "skiller-restore",
     description:
-      "把固定 quarantine root 內的 skill 移回固定 skill root（skiller-retire 的反向操作）：預設 preview 不移動；apply 需 confirm=true。復原會重跑與 promote 相同的驗證與風險分級；personal scope 需要 registry 內的 retired pin，成功後把 pin 改回 active。目標已存在同名 skill 時一律拒絕。managed scope 可選 targetAgents，在復原成功後重新插入指定 agent 的 permission.skill exact 行。",
+      "把固定 quarantine root 內的 skill 移回固定 skill root（skiller-retire 的反向操作）：預設 preview 不移動；apply 需 confirm=true。復原會重跑與 promote 相同的驗證與風險分級；personal scope 需要 registry 內的 retired pin，成功後把 pin 改回 active。目標已存在同名 skill 時一律拒絕。managed scope 可選 targetAgents，在復原成功後重新插入指定 agent 的 skill 路由規則（V1 的 permission.skill exact 行或 V2 permissions 陣列的 skill 項目）。",
     inputSchema: z.object({
       scope: z.enum(["project", "personal", "managed"]).optional(),
       name: z.string().optional(),

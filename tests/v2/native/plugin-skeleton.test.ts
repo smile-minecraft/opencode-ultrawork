@@ -153,6 +153,75 @@ describe("舊資料搬遷接線", () => {
   });
 });
 
+describe("無效設定與註冊回滾", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+  });
+
+  test("設定檔型別錯誤時外掛仍載入並警告，不拋錯", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "uw-skeleton-bad-settings-"));
+    const globalDir = mkdtempSync(join(tmpdir(), "uw-skeleton-bad-global-"));
+    roots.push(projectDir, globalDir);
+    mkdirSync(join(projectDir, ".ultrawork"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".ultrawork", "ultrawork.jsonc"),
+      `{"skiller": "off", "workflow": 0}`,
+      "utf-8",
+    );
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.join(" "));
+    };
+    try {
+      const fake = createFakeV2Context({ directory: projectDir });
+      const cleanup = await setupUltrawork(fake.ctx, { projectDir, globalDir });
+      expect(typeof cleanup).toBe("function");
+      await cleanup();
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings.some((line) => line.includes("skiller"))).toBe(true);
+    expect(warnings.some((line) => line.includes("workflow"))).toBe(true);
+  });
+
+  test("模組註冊中途失敗時已註冊的項目會被回滾", async () => {
+    const disposed: string[] = [];
+    const calls: string[] = [];
+    const okModule: ModuleDefinition = {
+      key: "search",
+      register: async () => {
+        calls.push("ok");
+        return {
+          dispose: async () => {
+            disposed.push("ok");
+          },
+        };
+      },
+    };
+    const boomModule: ModuleDefinition = {
+      key: "memory",
+      register: async () => {
+        calls.push("boom");
+        throw new Error("測試注入的註冊失敗");
+      },
+    };
+    const neverModule: ModuleDefinition = {
+      key: "skills",
+      register: async () => {
+        calls.push("never");
+      },
+    };
+    const fake = createFakeV2Context();
+    await expect(
+      setupUltrawork(fake.ctx, { modules: [okModule, boomModule, neverModule] }),
+    ).rejects.toThrow("測試注入的註冊失敗");
+    expect(calls).toEqual(["ok", "boom"]);
+    expect(disposed).toEqual(["ok"]);
+  });
+});
+
 describe("模組開關", () => {  function trackingModule(key: string, calls: string[]): ModuleDefinition {
     return {
       key,

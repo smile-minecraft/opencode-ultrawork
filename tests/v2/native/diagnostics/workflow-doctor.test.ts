@@ -412,7 +412,9 @@ describe("workflow_doctor 舊資料搬遷狀態", () => {
     await fake.registration?.dispose();
   });
 
-  test("有標記檔 → passed，說明舊資料以改名形式保留", async () => {
+  // 空的舊標記沒有攜帶任何層的資訊（舊版沒舊資料也會寫下），但這個專案也沒有
+  // 舊資料可搬，所以仍然是 passed —— 只是訊息不再謊稱「舊資料已改名保留」。
+  test("空舊標記＋沒有舊資料 → passed（沒有待搬遷）", async () => {
     const root = await tempRoot();
     writeMinimalWorkspace(root);
     writeMemoryFile(root, MIGRATION_MARKER_FILE, '{"version":1,"migratedAt":"2026-01-01T00:00:00.000Z","items":[],"skipped":[]}\n');
@@ -421,7 +423,7 @@ describe("workflow_doctor 舊資料搬遷狀態", () => {
     const r = await callTool(fake, "workflow_doctor");
     const item = checkByName(r, "Legacy .opencode Data Migration");
     expect(item.status).toBe("passed");
-    expect(item.details).toContain(".migrated-");
+    expect(item.details).toContain("沒有待搬遷");
     expect(r.warnings.some((w: string) => w.startsWith("[migrate]"))).toBe(false);
     await fake.registration?.dispose();
   });
@@ -494,7 +496,9 @@ describe("workflow_doctor 舊資料位置是 symlink", () => {
     await fake.registration?.dispose();
   });
 
-  test("有效 symlink 但已有標記檔 → passed（舊資料已改名保留）", async () => {
+  // 空的舊標記沒有攜帶任何層的資訊，不能當成「已搬完」：搬移端在同一個磁碟現況
+  // 下會因父層 symlink 記 unsafe-path、每次重試，診斷端跟著回 warn 才一致。
+  test("有效 symlink 但只有空標記 → warn（空標記證明不了搬過）", async () => {
     const root = await tempRoot();
     const external = await tempRoot();
     await writeFile(join(external, "state.md"), "---\nlimit: 3000\n---\n# S\n", "utf-8");
@@ -505,8 +509,10 @@ describe("workflow_doctor 舊資料位置是 symlink", () => {
 
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_doctor");
-    expect(checkByName(r, "Legacy .opencode Data Migration").status).toBe("passed");
-    expect(checkByName(r, "Legacy .opencode Data Migration").details).toContain(".migrated-");
+    const item = checkByName(r, "Legacy .opencode Data Migration");
+    expect(item.status).toBe("warn");
+    expect(item.details).toContain(".opencode/memory");
+    expect(item.details).toContain("搬遷未完成或失敗");
     await fake.registration?.dispose();
   });
 });
@@ -645,7 +651,9 @@ describe("workflow_doctor 標記存在但 .ultrawork 不安全", () => {
     await fake.registration?.dispose();
   });
 
-  test("反向：.ultrawork 是普通目錄且標記已存在 → passed（最常見的已搬過狀態）", async () => {
+  // 空的舊標記＋舊資料仍在 → warn：空標記證明不了搬過，搬移端同一個磁碟現況會真的
+  // 去搬（目標已存在就跳過、不覆寫），診斷端回 passed 就與搬移端不一致了。
+  test("反向：空標記但舊資料仍在 → warn「搬遷未完成」", async () => {
     const root = await tempRoot();
     writeMinimalWorkspace(root);
     await writeFile(
@@ -659,9 +667,9 @@ describe("workflow_doctor 標記存在但 .ultrawork 不安全", () => {
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_doctor");
     const item = checkByName(r, "Legacy .opencode Data Migration");
-    expect(item.status).toBe("passed");
-    expect(item.details).toContain(".migrated-");
-    expect(r.warnings.some((w: string) => w.startsWith("[migrate]"))).toBe(false);
+    expect(item.status).toBe("warn");
+    expect(item.details).toContain(".opencode/memory");
+    expect(r.warnings.some((w: string) => w.startsWith("[migrate]"))).toBe(true);
     await fake.registration?.dispose();
   });
 });

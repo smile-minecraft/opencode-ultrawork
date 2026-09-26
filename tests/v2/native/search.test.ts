@@ -350,8 +350,11 @@ describe("search 模組：grep_context", () => {
 
   test("工作階段位置為準：外掛目錄是 / 也不影響", async () => {
     const ws = createWorkspace();
-    // 外掛所在目錄是 /，但工作階段位置仍是 workspace：工具照工作階段位置解析。
-    const tools = await setupSearch(ws.root, "/");
+    // 外掛所在目錄 canonical 是 /（暫存目錄下的 symlink alias），但工作階段位置
+    // 仍是 workspace：工具照工作階段位置解析。fixture 只用暫存路徑，不拿真的 / 當根。
+    const pluginDirAlias = join(tmpdir(), `ultrawork-plugin-dir-alias-${Date.now()}`);
+    symlinkSync("/", pluginDirAlias);
+    const tools = await setupSearch(ws.root, pluginDirAlias);
     try {
       writeFileSync(join(ws.root, "sample.ts"), "needle line\n");
 
@@ -372,19 +375,25 @@ describe("search 模組：grep_context", () => {
       expect(grep.ok).toBe(true);
       expect(grep.matches.some((match: { file: string }) => match.file === "sample.ts")).toBe(true);
     } finally {
+      try { unlinkSync(pluginDirAlias); } catch {}
       await tools.cleanup();
       ws.cleanup();
     }
   });
-
   test("不安全的工作階段根目錄直接 fail closed", async () => {
     const ws = createWorkspace();
-    const alias = join(tmpdir(), `ultrawork-root-alias-${Date.now()}`);
+    // fixture 只用暫存路徑：alias 在暫存目錄下，canonical 分別指向 /、/Users、
+    // /Volumes（lexical 字面不再拿真的系統根當根目錄，避免 setup 時對真的 /
+    // 跑搬遷；字面 "/" 的判定由 kit isUnsafeRoot 單元測試覆蓋）。
+    const unsafeTargets = ["/", "/Users", "/Volumes"];
+    const aliases = unsafeTargets.map((_, index) => join(tmpdir(), `ultrawork-root-alias-${Date.now()}-${index}`));
     try {
-      symlinkSync("/", alias);
+      for (const [index, target] of unsafeTargets.entries()) {
+        symlinkSync(target, aliases[index]);
+      }
       writeFileSync(join(ws.root, "sample.ts"), "needle\n");
 
-      for (const projectRoot of ["/", "/Users", "/Volumes", alias]) {
+      for (const projectRoot of aliases) {
         const tools = await setupSearch(projectRoot);
 
         const peek = await run(tools.peek, { file: "sample.ts" });
@@ -395,7 +404,9 @@ describe("search 模組：grep_context", () => {
         await tools.cleanup();
       }
     } finally {
-      try { unlinkSync(alias); } catch {}
+      for (const alias of aliases) {
+        try { unlinkSync(alias); } catch {}
+      }
       ws.cleanup();
     }
   });

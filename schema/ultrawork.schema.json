@@ -21,6 +21,10 @@
       "$ref": "#/$defs/skills",
       "description": "技能清單與技能搜尋的呈現方式。"
     },
+    "verification": {
+      "$ref": "#/$defs/verification",
+      "description": "驗證工具的 agent 授權清單（第二層 runtime 防護，第一層是 agent 權限設定）。"
+    },
     "workflow": {
       "$ref": "#/$defs/workflow",
       "description": "任務與計畫工作流的行為設定。"
@@ -81,12 +85,12 @@
         "personalSkillRoot": {
           "type": "string",
           "default": "~/.agents/skills",
-          "description": "個人技能目錄，存放自己寫的技能；掃描與晉升都以它為根。"
+          "description": "個人技能目錄，存放自己寫的技能；掃描與晉升都以它為根。只採全域層的值，專案層寫了會被忽略並警告。"
         },
         "agentsDir": {
           "type": "string",
           "default": "auto",
-          "description": "晉升／退役時改寫的角色檔目錄。auto = <OpenCode 全域設定資料夾>/agents；也可以給絕對路徑。"
+          "description": "晉升／退役時改寫的角色檔目錄。auto = <OpenCode 全域設定資料夾>/agents；也可以給絕對路徑。只採全域層的值，專案層寫了會被忽略並警告。"
         }
       },
       "additionalProperties": false
@@ -109,6 +113,10 @@
         "completion": {
           "$ref": "#/$defs/completion",
           "description": "任務完成前的檢查條件。"
+        },
+        "evidencePack": {
+          "$ref": "#/$defs/evidencePack",
+          "description": "實作說明七節格式的派發前檢查。"
         }
       },
       "additionalProperties": false
@@ -120,6 +128,35 @@
           "type": "boolean",
           "default": true,
           "description": "memory 模組開啟時，任務完成前要先有有效的同步紀錄。memory 關掉時這個值不作用。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "verification": {
+      "type": "object",
+      "description": "驗證工具的 agent 授權清單。型別寫錯（例如給字串而不是陣列）會在載入時警告並退回預設，不影響外掛載入。",
+      "properties": {
+        "runAllowedAgents": {
+          "type": "array",
+          "default": ["momus"],
+          "description": "能呼叫 verification_run 的 agent 名單。預設只有 momus。空陣列代表沒有 agent 能呼叫（fail closed）；清單在模組註冊時快照，改完要重新載入才生效。"
+        },
+        "scopeCheckAllowedAgents": {
+          "type": "array",
+          "default": ["build", "ultra"],
+          "description": "能呼叫 change-scope-check 的 agent 名單。預設 build 與 ultra。空陣列代表沒有 agent 能呼叫（fail closed）；清單在模組註冊時快照，改完要重新載入才生效。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidencePack": {
+      "type": "object",
+      "description": "實作說明七節格式的派發前檢查。",
+      "properties": {
+        "gatedSubagents": {
+          "type": "array",
+          "default": ["implementer", "debugger", "ultra-coder"],
+          "description": "派發 subagent 時強制檢查實作說明七節格式的 subagent_type 名單。空陣列代表不再做派發前檢查；清單在模組註冊時快照，改完要重新載入才生效。"
         }
       },
       "additionalProperties": false

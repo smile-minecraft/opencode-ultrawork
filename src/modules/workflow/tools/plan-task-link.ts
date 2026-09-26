@@ -121,7 +121,7 @@ export function createPlanTaskLinkTool(runtime: UltraworkRuntimeContext) {
         plan,
       });
       if (inconsistencies.length > 0) {
-        return jsonResult({ ok: false, code: "INVALID_LINK_REFERENCES", inconsistencies }, null, 2);
+        return jsonResult({ ok: false, code: "INVALID_LINK_REFERENCES", inconsistencies });
       }
 
       // Update task fields
@@ -197,7 +197,7 @@ export function createPlanTaskLinkTool(runtime: UltraworkRuntimeContext) {
       }
       control.commit();
 
-      return jsonResult({ ok: true, planId, taskId, task: { planId: task.planId, taskType: task.taskType, parentTaskId: task.parentTaskId, subTaskIds: task.subTaskIds, dependsOn: task.dependsOn, blockedBy: task.blockedBy, parallelGroup: task.parallelGroup, planStep: task.planStep }, plan: { taskIds: plan.taskIds, nodeCount: plan.dependencyGraph.nodes.length, edgeCount: plan.dependencyGraph.edges.length }, autoPromoted }, null, 2);
+      return jsonResult({ ok: true, planId, taskId, task: { planId: task.planId, taskType: task.taskType, parentTaskId: task.parentTaskId, subTaskIds: task.subTaskIds, dependsOn: task.dependsOn, blockedBy: task.blockedBy, parallelGroup: task.parallelGroup, planStep: task.planStep }, plan: { taskIds: plan.taskIds, nodeCount: plan.dependencyGraph.nodes.length, edgeCount: plan.dependencyGraph.edges.length }, autoPromoted });
       });
       await runtime.updateStateMd(runtime.readRegistry(context), context);
       return result;

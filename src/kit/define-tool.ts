@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import { jsonError } from "./json.ts";
+import { ContentLockBusyError, contentLockBusyGuidance } from "./write-lock.ts";
 
 /** V2 工具執行時拿到的 context 最小形狀。 */
 export interface ToolExecutionContext {
@@ -55,8 +56,21 @@ export function defineTool<TInput>(definition: DefineToolInput<TInput>): Defined
       if (!parsed.success) {
         return { content: jsonError("INVALID_INPUT", `輸入驗證失敗：${parsed.error.message}`) };
       }
-      const result = await definition.execute(parsed.data, context);
-      return typeof result === "string" ? { content: result } : result;
+      try {
+        const result = await definition.execute(parsed.data, context);
+        return typeof result === "string" ? { content: result } : result;
+      } catch (error) {
+        // 工具邊界：鎖忙碌是可預期的併發結果，回外框而不是把例外穿出去。
+        // 沒自己 catch 的工具（registry 交易、狀態投影等）都由這層接住；
+        // 已經自己處理的工具走原本的分支，不受影響。其他錯誤原樣拋出。
+        if (error instanceof ContentLockBusyError) {
+          return {
+            // nextAction 引用鎖模組的唯一指引（與 error.message 內同一句），不另寫一份。
+            content: jsonError("CONTENT_LOCK_BUSY", error.message, contentLockBusyGuidance()),
+          };
+        }
+        throw error;
+      }
     },
   };
 }

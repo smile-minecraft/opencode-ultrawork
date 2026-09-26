@@ -14,12 +14,13 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { setupUltrawork } from "../../../src/index.ts";
 import { verificationModule } from "../../../src/modules/verification/index.ts";
@@ -243,7 +244,8 @@ describe("verification_run（新模組）", () => {
       );
 
       expect(result.ok).toBe(true);
-      expect(result.command).toEqual(item.command);
+      expect(result.command[0]).toBe(join(ws.root, "fake-bin", item.executable));
+      expect(result.command.slice(1)).toEqual(item.command.slice(1));
       expect(String(result.stdout)).toContain(`RUNNER_ARGS:${item.command.slice(1).join(" ")}`);
     }
   });
@@ -277,7 +279,8 @@ describe("verification_run（新模組）", () => {
 
     expect(result.ok).toBe(true);
     expect(result.code).toBe("VERIFIED");
-    expect(result.command).toEqual(["python3", "-m", "pytest", "tests/unit"]);
+    expect(result.command[0]).toBe(join(ws.root, "fake-bin", "python3"));
+    expect(result.command.slice(1)).toEqual(["-m", "pytest", "tests/unit"]);
     expect(result.cwd).toBe(realpathSync(ws.root));
     expect(String(result.stdout)).toContain("RUNNER_ARGS:-m pytest tests/unit");
   });
@@ -559,7 +562,7 @@ describe("verification_run（新模組）", () => {
     }
   });
 
-  test("unsafe 工作階段位置（/、/Users、/Volumes）必須 fail closed，不在危險目錄啟動 runner", async () => {
+  test("unsafe 工作階段位置（家目錄）必須 fail closed，不在危險目錄啟動 runner", async () => {
     const outside = mkdtempSync(join(tmpdir(), "verification-run-unsafe-"));
     const markerPath = join(outside, "unsafe-pytest-ran");
     try {
@@ -574,7 +577,10 @@ describe("verification_run（新模組）", () => {
       chmodSync(fakePytest, 0o755);
       process.env.PATH = `${fakeBin}${delimiter}${process.env.PATH ?? ""}`;
 
-      const unsafeRoots = ["/", "/Users", "/Volumes"] as const;
+      // 家目錄本身是 unsafe root（使用者裁定）：fixture 直接用家目錄當根，
+      // 不再拿真的 /、/Users、/Volumes 當根目錄（字面系統根的判定由 kit
+      // isUnsafeRoot 單元測試與下面的 canonical alias 案例覆蓋）。
+      const unsafeRoots = [homedir()] as const;
       const observations: Array<{ root: string; code: string; markerCreated: boolean }> = [];
 
       for (const unsafeRoot of unsafeRoots) {
@@ -599,9 +605,7 @@ describe("verification_run（新模組）", () => {
       }
 
       expect(observations).toEqual([
-        { root: "/", code: "INVALID_CWD", markerCreated: false },
-        { root: "/Users", code: "INVALID_CWD", markerCreated: false },
-        { root: "/Volumes", code: "INVALID_CWD", markerCreated: false },
+        { root: homedir(), code: "INVALID_CWD", markerCreated: false },
       ]);
     } finally {
       rmSync(outside, { recursive: true, force: true });
@@ -1057,7 +1061,8 @@ describe("verification_run（新模組）", () => {
     ]) {
       const result = await executeTool(tool("verification_run"), { ...input, timeoutMs: 5000 }, "momus");
       expect(result.ok).toBe(true);
-      expect(result.command).toEqual(["go", "test", "tests/unit"]);
+      expect(result.command[0]).toBe(join(ws.root, "fake-bin", "go"));
+      expect(result.command.slice(1)).toEqual(["test", "tests/unit"]);
     }
   });
 
@@ -1246,5 +1251,286 @@ describe("verification_run（新模組）", () => {
     }, "momus");
     expect(invalid.ok).toBe(false);
     expect(invalid.code).toBe("INVALID_EVIDENCE");
+  });
+
+  // ——— 安全修復：取消／絕對路徑／extraArgs 白名單 ———
+
+  async function executeWithSignal(definition: any, input: unknown, signal: AbortSignal) {
+    const raw = await definition.execute(input, { ...fakeV2ToolContext(), agent: "momus", signal });
+    const parsed = JSON.parse(raw.content);
+    return { ...(parsed.data ?? {}), ok: parsed.ok, code: parsed.code } as {
+      ok: boolean; code?: string; [key: string]: any;
+    };
+  }
+
+  test("取消：signal 中止後不等到逾時，process group 被 SIGTERM→SIGKILL", async () => {
+    const marker = join(ws.root, "cancel-grandchild-marker");
+    const binPath = join(ws.root, "fake-bin");
+    mkdirSync(binPath, { recursive: true });
+    const exe = join(binPath, "go");
+    writeFileSync(exe, `#!/bin/sh\nsh -c 'sleep 2; touch "${marker}"' &\nsleep 30\n`, "utf-8");
+    chmodSync(exe, 0o755);
+    process.env.PATH = `${binPath}${delimiter}${process.env.PATH ?? ""}`;
+
+    const { tool } = await loadTools(ws.root);
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const pending = executeWithSignal(
+      tool("verification_run"),
+      { runner: "go", script: "test", timeoutMs: 60_000 },
+      controller.signal,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    controller.abort();
+    const result = await pending;
+    const durationMs = Date.now() - startedAt;
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("CANCELLED");
+    expect(durationMs).toBeLessThan(20_000);
+    // 孫程序跟著整個 group 被殺掉，不會事後 touch marker。
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("取消：呼叫前就已中止的 signal 不啟動子程序", async () => {
+    const marker = join(ws.root, "cancel-prespawn-marker");
+    const binPath = join(ws.root, "fake-bin");
+    mkdirSync(binPath, { recursive: true });
+    const exe = join(binPath, "go");
+    writeFileSync(exe, `#!/bin/sh\ntouch "${marker}"\n`, "utf-8");
+    chmodSync(exe, 0o755);
+    process.env.PATH = `${binPath}${delimiter}${process.env.PATH ?? ""}`;
+
+    const { tool } = await loadTools(ws.root);
+    const controller = new AbortController();
+    controller.abort();
+    const result = await executeWithSignal(
+      tool("verification_run"),
+      { runner: "go", script: "test", timeoutMs: 5000 },
+      controller.signal,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("CANCELLED");
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("extraArgs 白名單：go -exec 被拒絕並列出允許範圍", async () => {
+    installFakeRunner("go");
+    const { tool } = await loadTools(ws.root);
+    const result = await executeTool(
+      tool("verification_run"),
+      { runner: "go", script: "test", args: ["-exec", "some-test-helper"], timeoutMs: 5000 },
+      "momus",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("ARGS_NOT_ALLOWED");
+    expect(String(result.error)).toContain("-exec");
+    expect(String(result.error)).toContain("-run");
+    expect(result.allowedArgs).toContain("-run");
+    expect(result.allowedArgs).not.toContain("-exec");
+  });
+
+  test("extraArgs 白名單：node --import 被拒絕並列出允許範圍", async () => {
+    installFakeRunner("node");
+    const { tool } = await loadTools(ws.root);
+    const result = await executeTool(
+      tool("verification_run"),
+      { runner: "node", script: "test", args: ["--import", "./register.js"], timeoutMs: 5000 },
+      "momus",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("ARGS_NOT_ALLOWED");
+    expect(String(result.error)).toContain("--import");
+    expect(String(result.error)).toContain("--test-name-pattern");
+    expect(result.allowedArgs).toContain("--test-name-pattern");
+    expect(result.allowedArgs).not.toContain("--import");
+  });
+
+  test("extraArgs 白名單：pytest -p 被拒絕並列出允許範圍", async () => {
+    installFakeRunner("pytest");
+    const { tool } = await loadTools(ws.root);
+    const result = await executeTool(
+      tool("verification_run"),
+      { runner: "pytest", script: "test", args: ["-p", "some_plugin"], timeoutMs: 5000 },
+      "momus",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("ARGS_NOT_ALLOWED");
+    expect(String(result.error)).toContain("-p");
+    expect(String(result.error)).toContain("-k");
+    expect(result.allowedArgs).toContain("-k");
+    expect(result.allowedArgs).not.toContain("-p");
+  });
+
+  test("extraArgs 白名單：cargo -p（選套件）放行，pytest -p（載外掛）拒絕", async () => {
+    installFakeRunner("cargo");
+    installFakeRunner("pytest");
+    const { tool } = await loadTools(ws.root);
+
+    const cargo = await executeTool(
+      tool("verification_run"),
+      { runner: "cargo", script: "test", args: ["-p", "my-crate"], timeoutMs: 5000 },
+      "momus",
+    );
+    expect(cargo.ok).toBe(true);
+    expect(cargo.code).toBe("VERIFIED");
+
+    const pytest = await executeTool(
+      tool("verification_run"),
+      { runner: "pytest", script: "test", args: ["-p", "my-crate"], timeoutMs: 5000 },
+      "momus",
+    );
+    expect(pytest.ok).toBe(false);
+    expect(pytest.code).toBe("ARGS_NOT_ALLOWED");
+  });
+
+  test("extraArgs 白名單：測試檔與測試名稱的位置參數不受影響", async () => {
+    mkdirSync(join(ws.root, "tests", "unit"), { recursive: true });
+    writeFileSync(join(ws.root, "tests", "unit", "test_b.py"), "", "utf-8");
+    installFakeRunner("pytest");
+    installFakeRunner("go");
+    const { tool } = await loadTools(ws.root);
+
+    const byFile = await executeTool(
+      tool("verification_run"),
+      { runner: "pytest", args: ["-q", "tests/unit/test_b.py"], timeoutMs: 5000 },
+      "momus",
+    );
+    expect(byFile.ok).toBe(true);
+
+    const byName = await executeTool(
+      tool("verification_run"),
+      { runner: "go", args: ["-run", "TestRecovery", "./..."], timeoutMs: 5000 },
+      "momus",
+    );
+    expect(byName.ok).toBe(true);
+  });
+
+  test("spawn 使用 PATH 解析出的絕對執行檔路徑，且優先命中 PATH 前面的項目", async () => {
+    const firstBin = join(ws.root, "first-bin");
+    const secondBin = join(ws.root, "second-bin");
+    for (const dir of [firstBin, secondBin]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "go"), `#!/bin/sh\nprintf 'FROM:%s\\n' "${dir}"\n`, "utf-8");
+      chmodSync(join(dir, "go"), 0o755);
+    }
+    process.env.PATH = `${firstBin}${delimiter}${secondBin}${delimiter}${process.env.PATH ?? ""}`;
+
+    const { tool } = await loadTools(ws.root);
+    const result = await executeTool(
+      tool("verification_run"),
+      { runner: "go", script: "test", args: ["tests/unit"], timeoutMs: 5000 },
+      "momus",
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.command[0]).toBe(join(firstBin, "go"));
+    expect(String(result.stdout)).toContain(`FROM:${firstBin}`);
+  });
+
+  // ——— 審查退回修正：leader 先退出＋worker 忽略 SIGTERM，SIGKILL 仍要送達 ———
+
+  function installIgnoreTermWorkerRunner(heartbeat: string) {
+    const binPath = join(ws.root, "fake-bin");
+    mkdirSync(binPath, { recursive: true });
+    const exe = join(binPath, "go");
+    writeFileSync(
+      exe,
+      [
+        "#!/bin/sh",
+        // worker 明確忽略 SIGTERM，每 0.2 秒寫一次計數器心跳。
+        `( trap '' TERM; i=0; while true; do i=$((i + 1)); echo $i > "${heartbeat}"; sleep 0.2; done ) &`,
+        // leader 收到 SIGTERM 就照預設行為退出，不等 worker。
+        "sleep 30",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    chmodSync(exe, 0o755);
+    process.env.PATH = `${binPath}${delimiter}${process.env.PATH ?? ""}`;
+  }
+
+  async function waitForHeartbeat(heartbeat: string): Promise<void> {
+    const startedAt = Date.now();
+    while (!existsSync(heartbeat)) {
+      if (Date.now() - startedAt > 3000) throw new Error(`worker 沒有寫出心跳檔：${heartbeat}`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  async function expectHeartbeatFrozen(heartbeat: string): Promise<void> {
+    // SIGKILL 在 SIGTERM 約 4 秒後送達；6.5 秒後心跳必須已經停止。
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    const first = readFileSync(heartbeat, "utf8");
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(readFileSync(heartbeat, "utf8")).toBe(first);
+  }
+
+  test("取消：worker 忽略 SIGTERM 時，leader 退出後 SIGKILL 仍要殺掉 worker", async () => {
+    const heartbeat = join(ws.root, "ignore-term-heartbeat-cancel");
+    installIgnoreTermWorkerRunner(heartbeat);
+
+    const { tool } = await loadTools(ws.root);
+    const controller = new AbortController();
+    const pending = executeWithSignal(
+      tool("verification_run"),
+      { runner: "go", script: "test", timeoutMs: 60_000 },
+      controller.signal,
+    );
+    await waitForHeartbeat(heartbeat);
+    controller.abort();
+    const result = await pending;
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("CANCELLED");
+    await expectHeartbeatFrozen(heartbeat);
+  }, 15_000);
+
+  test("逾時：worker 忽略 SIGTERM 時，leader 退出後 SIGKILL 仍要殺掉 worker", async () => {
+    const heartbeat = join(ws.root, "ignore-term-heartbeat-timeout");
+    installIgnoreTermWorkerRunner(heartbeat);
+
+    const { tool } = await loadTools(ws.root);
+    const result = await executeTool(
+      tool("verification_run"),
+      { runner: "go", script: "test", timeoutMs: 500 },
+      "momus",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("TIMEOUT");
+    expect(result.timedOut).toBe(true);
+    await expectHeartbeatFrozen(heartbeat);
+  }, 15_000);
+});
+
+describe("verification_run 授權清單可由設定覆寫", () => {
+  test("runAllowedAgents 改成 qa 時，qa 放行、momus 被拒", async () => {
+    const root = mkdtempSync(join(tmpdir(), "verification-run-override-"));
+    try {
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        verification: { ...DEFAULT_SETTINGS.verification, runAllowedAgents: ["qa"] },
+      };
+      const fake = createFakeV2Context({ directory: root });
+      await verificationModule.register({ ctx: fake.ctx, settings });
+      const tool = fake.added.get("verification_run");
+      if (!tool) throw new Error("tool not registered: verification_run");
+      // qa 在新清單內：過了授權門，走到參數檢查才被擋。
+      const allowed = await executeTool(tool, { runner: "bun", script: "postinstall" }, "qa");
+      expect(allowed.code).toBe("SCRIPT_NOT_ALLOWED");
+      // momus 不在新清單內：授權門直接拒絕，並點名有效清單。
+      const denied = await executeTool(tool, { runner: "bun", script: "postinstall" }, "momus");
+      expect(denied.code).toBe("AGENT_NOT_ALLOWED");
+      expect(denied.error).toContain("qa");
+      expect(denied.error).not.toContain("momus");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

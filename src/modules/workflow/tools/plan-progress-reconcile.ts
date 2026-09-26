@@ -125,7 +125,7 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
           ok: false,
           code: "PLAN_ID_REQUIRED",
           error: "需要 planId，而且不能是空字串。",
-        }, null, 2);
+        });
       }
 
       const currentProject = runtime.getCurrentProject(context);
@@ -136,14 +136,14 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
           ok: false,
           code: "PLAN_NOT_FOUND",
           error: `目前的專案裡找不到計畫 ${targetPlanId}。`,
-        }, null, 2);
+        });
       }
       if (!sameProject(plan, currentProject)) {
         return jsonResult({
           ok: false,
           code: "CROSS_PROJECT_REJECTED",
           error: `跨專案的核對被擋下。目前的專案是 ${currentProject.projectId}。`,
-        }, null, 2);
+        });
       }
 
       const root = runtime.resolveProjectRoot(context);
@@ -152,12 +152,12 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
           ok: false,
           code: "UNSAFE_PROJECT_ROOT",
           error: `專案根目錄不安全，不能在這裡執行核對：${root}`,
-        }, null, 2);
+        });
       }
       const { PLANS_JSON, TASKS_JSON, PLANS_DIR } = runtime.getPaths(context);
       const rawPlansResult = readRawRegistry(root, PLANS_DIR, PLANS_JSON);
       if (!rawPlansResult.ok) {
-        return jsonResult({ ok: false, code: "RAW_PLAN_REGISTRY_INVALID", error: rawPlansResult.error }, null, 2);
+        return jsonResult({ ok: false, code: "RAW_PLAN_REGISTRY_INVALID", error: rawPlansResult.error });
       }
       const rawPlansRegistry = rawPlansResult.registry;
       if (
@@ -171,7 +171,7 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
           ok: false,
           code: "RAW_PLAN_REGISTRY_INVALID",
           error: "plans.json 的檔頭、專案綁定、或 plans 對照表格式不對。",
-        }, null, 2);
+        });
       }
       const rawPlans = rawPlansRegistry.plans;
       const matchingPlanEntries = Object.entries(rawPlans).filter(([, candidate]) =>
@@ -188,7 +188,7 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
           ok: false,
           code: "PLAN_SOURCE_IDENTITY_MISMATCH",
           error: "plans.json 的 key 和內部 planId 兜不出唯一一個指定的計畫。",
-        }, null, 2);
+        });
       }
       if (
         typeof rawPlan.projectId !== "string"
@@ -201,12 +201,12 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
           ok: false,
           code: "PLAN_SOURCE_IDENTITY_MISMATCH",
           error: "原始的計畫綁定、或關鍵的完成狀態來源，和正規化後的目標計畫對不上。",
-        }, null, 2);
+        });
       }
 
       const rawTombstones = rawPlan.completionTombstones;
       if (rawTombstones !== undefined && !isRecord(rawTombstones)) {
-        return jsonResult({ ok: false, code: "RAW_PLAN_REGISTRY_INVALID", error: "目標計畫的 completionTombstones 必須是一個物件。" }, null, 2);
+        return jsonResult({ ok: false, code: "RAW_PLAN_REGISTRY_INVALID", error: "目標計畫的 completionTombstones 必須是一個物件。" });
       }
       for (const [taskId, value] of Object.entries(rawTombstones ?? {})) {
         if (
@@ -219,13 +219,13 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
             ok: false,
             code: "RAW_PLAN_REGISTRY_INVALID",
             error: `目標計畫裡「${taskId}」的終結標記格式不對。`,
-          }, null, 2);
+          });
         }
       }
 
       const rawTasksResult = readRawRegistry(root, PLANS_DIR, TASKS_JSON);
       if (!rawTasksResult.ok) {
-        return jsonResult({ ok: false, code: "RAW_TASK_REGISTRY_INVALID", error: rawTasksResult.error }, null, 2);
+        return jsonResult({ ok: false, code: "RAW_TASK_REGISTRY_INVALID", error: rawTasksResult.error });
       }
       const rawTasksRegistry = rawTasksResult.registry;
       if (
@@ -239,7 +239,7 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
           ok: false,
           code: "RAW_TASK_REGISTRY_INVALID",
           error: "tasks.json header, project binding, or tasks map is invalid.",
-        }, null, 2);
+        });
       }
 
       const issues = collectCompletionSourceIssues(plan, taskRegistry.tasks);
@@ -307,7 +307,7 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
           planId: targetPlanId,
           mode: effectiveMode,
           issues,
-        }, null, 2);
+        });
       }
 
       const stats = computePlanCompletionStats(plan, taskRegistry);
@@ -351,7 +351,7 @@ export function createPlanProgressReconcileTool(runtime: UltraworkRuntimeContext
           : (effectiveMode === "preview"
             ? "Preview only; rerun with mode='apply' to write this exact reconciliation."
             : "No write was needed because finishedTaskIds already matches canonical completion sources."),
-      }, null, 2);
+      });
       });
       return result;
     },

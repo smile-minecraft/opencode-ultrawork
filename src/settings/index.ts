@@ -4,6 +4,7 @@ export { DEFAULT_SETTINGS, MODULE_KEYS, type ModuleKey, type UltraworkSettings }
 export { parseJsonc, stripJsoncComments } from "./jsonc.ts";
 export { loadSettings, type LoadSettingsInput, type SettingsFileReader, type SettingsLoadResult } from "./load.ts";
 export { mergeSettings } from "./merge.ts";
+export { asStringList, sanitizeSettings, type SanitizeResult } from "./validate.ts";
 export {
   resolveGlobalConfigDir,
   resolveGlobalUltraworkDir,

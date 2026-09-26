@@ -58,7 +58,7 @@ export function createSkillerRetireTool(deps: SkillerDeps) {
   return defineTool({
     name: "skiller-retire",
     description:
-      "把固定 skill root 內的已安裝 skill 移到固定 quarantine root：預設 preview 不移動；apply 需 confirm=true。只 quarantine、不刪除、不覆蓋既有 quarantine、拒絕 symlink source；回傳 digest 與 metadata。managed scope apply 另掃描全部 agent 檔並移除該 skill 的 permission.skill exact 行。",
+      "把固定 skill root 內的已安裝 skill 移到固定 quarantine root：預設 preview 不移動；apply 需 confirm=true。只 quarantine、不刪除、不覆蓋既有 quarantine、拒絕 symlink source；回傳 digest 與 metadata。managed scope apply 另掃描全部 agent 檔並移除該 skill 的 skill 路由規則（V1 的 permission.skill exact 行或 V2 permissions 陣列的 skill 項目）。",
     inputSchema: z.object({
       scope: z.enum(["project", "personal", "managed"]).optional(),
       name: z.string().optional(),

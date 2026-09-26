@@ -15,7 +15,9 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { ultraworkGitignoreHasRequiredLines } from "../../migrate/index.ts";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 import {
   BOOTSTRAP_FULL_SOFT_BUDGET,
@@ -25,10 +27,14 @@ import {
   getProjectMdNearLimitThreshold,
   getProjectMdOverLimitHint,
   resolveProjectMdPolicyFromContent,
-} from "../../modules/memory/index.ts";
+} from "../memory/index.ts";
 import {
+  inspectContentRef,
   inspectPlanRegistry,
+  isFinishedPlanState,
+  isFinishedTaskState,
   readInconsistentMarker,
+  type ContentRefDefect,
   type InconsistentMarker,
   type Paths,
   type PlanRegistryHealthIssue,
@@ -270,8 +276,10 @@ export function collectMissingContentRef(
   }
   let count = 0;
   for (const plan of Object.values(plansRegistry.plans)) {
-    const isActive = !["COMPLETED", "FAILED", "CANCELLED"].includes(plan.state);
-    if (isActive && !plan.contentRef) count += 1;
+    // 「活躍」用 `isFinishedPlanState` 判定（COMPLETED／FAILED／CANCELLED 為終態），
+    // 不在這裡另寫一份狀態清單 —— 下面 `collectContentRefIntegrity` 的嚴重度分級
+    // 必須與這一條同一個判斷，寫兩份就會漂。
+    if (!isFinishedPlanState(plan.state) && !plan.contentRef) count += 1;
   }
   const warnings: string[] = [];
   if (count > 0) {
@@ -280,6 +288,101 @@ export function collectMissingContentRef(
     );
   }
   return { count, warnings };
+}
+
+/** 註冊檔裡一筆用不了的參照；`kind` 決定 doctor 的嚴重度（見 `collectContentRefIntegrity`）。 */
+export interface ContentRefIssue {
+  owner: "plan" | "task";
+  id: string;
+  field: "contentRef" | "contentPath" | "taskContentPath";
+  ref: string;
+  kind: Exclude<ContentRefDefect, null>;
+  /** 可執行的修法（點名持有者、原始值、該改成什麼）。 */
+  repair: string;
+}
+
+export interface ContentRefIntegrityOutcome {
+  /** 全部問題（含只算 warn 的）。每筆的欄位形狀是 doctor 的對外欄位，不要加東西。 */
+  issues: ContentRefIssue[];
+  /** 必須讓診斷失敗的那些（`issues` 的子集，同一批物件）。 */
+  blocking: ContentRefIssue[];
+  /** plans.json／tasks.json 其中之一讀不到時 → skipped。 */
+  unavailableReason?: string;
+}
+
+/**
+ * 不論持有者是進行中還是已終態，都算必須回報的缺陷。
+ *
+ * 共同點是「這筆引用永遠指向不到正文」：守衛擋下（`legacy-prefix`／`outside-store`），
+ * 或目標根本不是可讀的檔（`not-a-file`）。目錄不是合法的正文目標，所以它跟
+ * `missing-file` 不同 —— 就算計畫已封存，引用指著目錄仍然是壞的。
+ */
+const STRUCTURAL_DEFECTS: ReadonlySet<ContentRefIssue["kind"]> = new Set<ContentRefIssue["kind"]>([
+  "legacy-prefix",
+  "outside-store",
+  "not-a-file",
+]);
+
+/** 這筆問題是否必須讓診斷失敗。 */
+function isBlockingRefIssue(issue: ContentRefIssue, ownerIsActive: boolean): boolean {
+  if (STRUCTURAL_DEFECTS.has(issue.kind)) return true;
+  // `missing-file`：引用格式沒問題，缺的只是正文。已封存／已完成的項目常是這個狀態
+  // （正文清掉、引用留著），拿它擋人沒有道理；進行中／活躍的項目才是真的讀不到東西。
+  return issue.kind === "missing-file" && ownerIsActive;
+}
+
+/**
+ * 逐項驗證註冊檔裡的每一個 `contentRef`（計畫與任務）與 `taskContentPath`。
+ *
+ * 為什麼需要這一項：原本 doctor 只數「進行中計畫**缺** `contentRef`」（欄位不存在），
+ * 看不到「欄位在、但指向用不了的位置」。於是註冊檔留著已搬走的 `.opencode/` 引用時，
+ * 每一項檢查都回通過，直到有人建立新計畫才被路徑守衛擋下，而錯誤訊息只會講那個
+ * 檔案路徑，不會講是哪個計畫害的。
+ *
+ * 判定**不是**另一份路徑規則：每個值都餵給讀寫工具同一個 `inspectContentRef`
+ * （裡面就是 `resolvePlansContentRef` → `assertSafePlansPath`）。同一個值，
+ * doctor 與工具一定給同一個答案。
+ *
+ * 嚴重度分兩級，界線與既有的 `collectMissingContentRef` 一致 —— 那條檢查只把
+ * **進行中**（非 COMPLETED／FAILED／CANCELLED）計畫的「缺欄位」算成問題，所以
+ * 「進行中項目指向不存在的正文」同樣必須算問題；已終態的正文缺失維持 warn。
+ */
+export function collectContentRefIntegrity(
+  paths: Paths,
+  plansRegistry: PlansRegistry | null,
+  registry: TasksRegistry,
+  plansUnavailableReason?: string,
+): ContentRefIntegrityOutcome {
+  const issues: ContentRefIssue[] = [];
+  if (!plansRegistry) {
+    return { issues, blocking: [], unavailableReason: plansUnavailableReason };
+  }
+  const { PROJECT_ROOT, PLANS_DIR } = paths;
+  const blocking: ContentRefIssue[] = [];
+  const inspect = (
+    ref: string | undefined,
+    owner: { owner: "plan" | "task"; id: string; field: ContentRefIssue["field"] },
+    ownerIsActive: boolean,
+  ): void => {
+    if (!ref) return;
+    const inspection = inspectContentRef(ref, PROJECT_ROOT, PLANS_DIR, owner);
+    if (!inspection.defect || !inspection.message) return;
+    const issue: ContentRefIssue = { ...owner, ref, kind: inspection.defect, repair: inspection.message };
+    issues.push(issue);
+    if (isBlockingRefIssue(issue, ownerIsActive)) blocking.push(issue);
+  };
+  for (const plan of Object.values(plansRegistry.plans)) {
+    // 活躍語意與 `collectMissingContentRef` 同一個來源（同一組終態常數）。
+    const active = !isFinishedPlanState(plan.state);
+    inspect(plan.contentRef, { owner: "plan", id: plan.planId, field: "contentRef" }, active);
+    inspect(plan.contentPath, { owner: "plan", id: plan.planId, field: "contentPath" }, active);
+  }
+  for (const task of Object.values(registry.tasks)) {
+    const active = !isFinishedTaskState(task.state);
+    inspect(task.contentRef, { owner: "task", id: task.taskId, field: "contentRef" }, active);
+    inspect(task.taskContentPath, { owner: "task", id: task.taskId, field: "taskContentPath" }, active);
+  }
+  return { issues, blocking };
 }
 
 export interface PlanHealthOutcome {
@@ -388,4 +491,138 @@ export function countByStatus(checks: readonly CheckItem[]): Record<CheckItem["s
 /** 記憶體目錄（`.ultrawork/`）；bootstrap 的 `project.memoryDir` 欄位。 */
 export function memoryDirOf(paths: Paths): string {
   return join(paths.PROJECT_ROOT, ".ultrawork");
+}
+
+// ─── `.ultrawork/` 版控衛生（`workflow_doctor` 用，唯讀）───
+//
+// 三種情況（都是 warn，不影響診斷 ok；插件永遠不改使用者的版控，只提示）：
+// (a) `.ultrawork/.gitignore` 缺必要行（`*`）；
+// (b) `.ultrawork/` 內有檔案正被版控追蹤（含已追蹤的 `ultrawork.jsonc`）；
+// (c) 專案設定檔（`ultrawork.jsonc`）仍被豁免（`!ultrawork.jsonc` 還在）。
+//
+// 必要行的判準與搬移端同一個（`ultraworkGitignoreHasRequiredLines`），兩端對同一個
+// 檔案給同一個答案。全域層不建 `.gitignore`、插件不插手使用者的全域政策，所以這裡
+// 只看專案層。
+
+/** 專案設定檔名：豁免檢查只認它（`!ultrawork.jsonc`／`!/ultrawork.jsonc`）。 */
+export const ULTRAWORK_SETTINGS_FILE = "ultrawork.jsonc";
+
+export interface UltraworkGitignoreHealth {
+  /** `.gitignore` 不存在或讀不到時為 `undefined`（等同缺必要行）。 */
+  content: string | undefined;
+  /** 有必要行 `*`。 */
+  hasRequiredLine: boolean;
+  /** 專案設定檔仍被豁免（`!ultrawork.jsonc` 還在）。 */
+  exemptsSettingsFile: boolean;
+}
+
+/** 讀專案層 `.ultrawork/.gitignore` 並判斷三種情況裡的 (a) 與 (c)。 */
+export function checkUltraworkGitignore(projectRoot: string): UltraworkGitignoreHealth {
+  let content: string | undefined;
+  try {
+    const path = join(projectRoot, ".ultrawork", ".gitignore");
+    content = existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+  } catch {
+    content = undefined;
+  }
+  if (content === undefined) return { content, hasRequiredLine: false, exemptsSettingsFile: false };
+  return { content, ...checkUltraworkGitignoreContent(content) };
+}
+
+/** 純函式：這份 `.gitignore` 內容有沒有必要行、豁免了設定檔沒有。 */
+export function checkUltraworkGitignoreContent(content: string): {
+  hasRequiredLine: boolean;
+  exemptsSettingsFile: boolean;
+} {
+  // 必要行的判準與搬移端同一個（`ultraworkGitignoreHasRequiredLines`），兩端對同一個
+  // 檔案給同一個答案；豁免檢查是診斷端自己的（搬移端不管豁免，只管不覆寫）。
+  return {
+    hasRequiredLine: ultraworkGitignoreHasRequiredLines(content),
+    exemptsSettingsFile: content
+      .split("\n")
+      .map((line) => line.trim().replace(/\r$/, ""))
+      .some((line) => line.startsWith("!") && gitignoreNegationMatchesFile(line.slice(1).trim(), ULTRAWORK_SETTINGS_FILE)),
+  };
+}
+
+/**
+ * 這條否定規則（`!` 之後的內容）會不會讓 `fileName` 重新納入版控。
+ *
+ * 不只認 `!ultrawork.jsonc` 這種精確寫法：`!*.jsonc` 這類廣泛否定同樣會讓設定檔
+ * 被追蹤，必須警告。實作是 gitignore 語意的最小子集（只為這一個檔名服務）：
+ * `*` 不跨 `/`、`?` 單字元、`[...]` 字元組、雙星號斜線可匹配零層目錄；行首 `/` 與
+ * `./` 視為錨定到 `.ultrawork/` 根目錄。完整語意（中段雙星號、跳脫字元等）不在
+ * 範圍內 —— 判讀方向偏向「寧可多報」：寫法看不懂時當成會匹配，提醒使用者人工確認，
+ * 也不影響診斷 ok。
+ */
+export function gitignoreNegationMatchesFile(pattern: string, fileName: string): boolean {
+  let normalized = pattern.replace(/^\.\//, "").replace(/^\//, "");
+  if (normalized === "" || normalized.endsWith("/")) return false;
+  const anchored = normalized.includes("/");
+  const candidates = anchored
+    ? [normalized, normalized.replace(/\*\*\//g, "")]
+    : [normalized];
+  return candidates.some((candidate) => gitignoreGlobMatches(candidate, anchored ? fileName : basenameOf(fileName)));
+}
+
+/** 最小 glob：`*` 不跨 `/`，`?` 單字元，`[...]`（含 `[!...]`）字元組，`**` 跨目錄。 */
+function gitignoreGlobMatches(pattern: string, text: string): boolean {
+  let regex = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === "*") {
+      if (pattern[index + 1] === "*") {
+        regex += ".*";
+        index += 1;
+      } else {
+        regex += "[^/]*";
+      }
+    } else if (char === "?") {
+      regex += "[^/]";
+    } else if (char === "[") {
+      const close = pattern.indexOf("]", index + 1);
+      if (close === -1) return true;
+      const body = pattern.slice(index + 1, close);
+      regex += `[${body.startsWith("!") ? `^${body.slice(1)}` : body}]`;
+      index = close;
+    } else {
+      regex += char.replace(/[.+^${}()|\\]/g, "\\$&");
+    }
+  }
+  try {
+    return new RegExp(`^${regex}$`).test(text);
+  } catch {
+    return true;
+  }
+}
+
+function basenameOf(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash === -1 ? path : path.slice(slash + 1);
+}
+
+export interface UltraworkGitTrackingHealth {
+  /** 被版控追蹤的 `.ultrawork/` 內檔案（相對於專案根目錄）；`null` 代表查不到。 */
+  tracked: string[] | null;
+  /** `tracked` 為 `null` 時的原因（不是 git repo、沒有 git 等）。 */
+  unavailableReason?: string;
+}
+
+/**
+ * 列出被版控追蹤的 `.ultrawork/` 內檔案（唯讀的 `git ls-files`）。
+ *
+ * 失敗（不是 git repo、沒有 git、被拒）就回 `tracked: null` 加原因，呼叫端標
+ * skipped、不假裝檢查過。絕不執行任何會改動版控的指令。
+ */
+export function collectUltraworkGitTracking(projectRoot: string): UltraworkGitTrackingHealth {
+  try {
+    const output = execFileSync("git", ["-C", projectRoot, "ls-files", "-z", "--", ".ultrawork"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const tracked = output.split("\0").filter((entry) => entry !== "").sort();
+    return { tracked };
+  } catch (error) {
+    return { tracked: null, unavailableReason: (error as Error).message };
+  }
 }

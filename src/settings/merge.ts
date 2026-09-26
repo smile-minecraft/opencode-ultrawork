@@ -4,7 +4,8 @@
  * 物件深層合併，純量與陣列整個覆寫。覆寫層不是普通物件時整層忽略。
  */
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** 普通物件判斷（合併與驗證共用）：陣列、null、class 實例都不算。 */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;

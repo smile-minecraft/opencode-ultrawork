@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorkOrderStore } from "../../../../src/modules/workflow/tools/work-order-store.ts";
+import { DEFAULT_SETTINGS } from "../../../../src/settings/defaults.ts";
 import { callTool, setupWorkflow, validWorkOrder } from "./_helpers.ts";
 
 const roots: string[] = [];
@@ -191,6 +192,27 @@ describe("workflow V2 hooks", () => {
     const compaction = { sessionID: "s1", system: [] as any[] };
     await fake.sessionHooks.get("compaction")!(compaction);
     expect(compaction.system).toHaveLength(1);
+    await fake.registration?.dispose();
+  });
+});
+
+describe("實作說明 gate 的受控清單可由設定覆寫", () => {
+  test("gatedSubagents 改成 custom-agent 時，只有它被檢查", async () => {
+    const fake = await setupWorkflow(await tempRoot(), {
+      ...DEFAULT_SETTINGS,
+      workflow: {
+        ...DEFAULT_SETTINGS.workflow,
+        evidencePack: { gatedSubagents: ["custom-agent"] },
+      },
+    });
+    const hook = fake.toolHooks.get("execute.before")!;
+    const gated = { agent: "custom-agent", prompt: "亂寫的 prompt" };
+    await expect(hook({ tool: "subagent", sessionID: "s1", input: gated })).rejects.toThrow(
+      "實作準備未通過",
+    );
+    const ungated = { agent: "implementer", prompt: "亂寫的 prompt" };
+    await hook({ tool: "subagent", sessionID: "s1", input: ungated });
+    expect(ungated.prompt).toBe("亂寫的 prompt");
     await fake.registration?.dispose();
   });
 });

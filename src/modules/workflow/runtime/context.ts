@@ -12,9 +12,10 @@
  *     回傳物件**逐字一致**，以維持 TypeScript structural typing 相容性。
  *     解構、或 `writeRegistry` 的 `MEMORY_DIR / TASKS_JSON` 解構）都依
  *     賴此形狀。
- *   - `isUnsafeRoot(path)` 黑名單（`/` / `""` / `"."` / `".."` / `/Users` /
- *     `/Volumes`）必須與原 closure 內版本一致，禁止新增/移除項目，避免
- *     既有防呆失效。
+ *   - `isUnsafeRoot(path)` 黑名單只有 kit 一份（`src/kit/path-guard.ts`：
+ *     `/`／`""`／`"."`／`".."`／`/Users`／`/Volumes`／家目錄本身，另對
+ *     symlink 解析後的真實路徑套用同一份黑名單）。家目錄入列是使用者裁定；
+ *     這裡只轉匯出，不再自帶黑名單。
  *   - `getPathsForRoot(projectRoot)` 對根目錄的 layout
  *     （`.ultrawork/{project.md, state.md, tasks.json, plans.json,
  *     receipts/}` 與 `.ultrawork/plans/`）必須與原 closure 版本完全相同，
@@ -24,15 +25,17 @@
  * 限制：
  *   - 本檔為 pure leaf module，**不得** import runtime module 內其他檔案
  *     （`./context-builder.ts` / `./registry-io.ts` 等），亦**不得** import
- *   - 僅依賴 `node:path`、`node:fs`（realpath containment 用）與
+ *   - 僅依賴 `node:path`、`../../kit/path-guard.ts`（unsafe-root 唯一判定）與
  *     `./../core/helpers.ts` 的 `deriveProjectId`。
  *
  * @see ../../../../README.md                              — 模組一覽
  */
 
-import { join, resolve, dirname, sep } from "node:path";
-import { realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { deriveProjectId } from "../core/helpers.ts";
+
+/** 全外掛唯一的 unsafe-root 判定在 kit；這裡轉匯出，保持既有 import 路徑可用。 */
+export { isUnsafeRoot } from "../../../kit/path-guard.ts";
 
 /**
  * `getPathsForRoot` 回傳形狀一致）。
@@ -57,50 +60,6 @@ export interface Paths {
    * 所以必須被裁剪；這一份回答「當時發生過什麼」，價值完全來自不被裁剪。
    */
   AUDIT_LOG: string;
-}
-
-/**
- * 判斷路徑是否屬於「unsafe root」黑名單：
- *   - 空字串、`/`、`.`、`..`
- *   - `/Users`、`/Volumes`（macOS 系統關鍵目錄，避免誤在根或使用者根
- *     建立 `.opencode`）
- *
- * 除 lexical 黑名單外，另做 realpath containment：把同一份黑名單套用到
- * symlink 解析後的真實路徑（目標不存在時取最近存在祖先）。否則指向
- * `/`、`/Users`、`/Volumes` 的 symlink alias 會通過 lexical 檢查，讓
- * registry / state / receipt 寫入落在系統關鍵目錄。無法確認 containment
- * 時一律 fail closed。
- *
- * 用於 registry IO / lazyEnsure / ensureDir 等寫入動作前的安全檢查。
- * 僅新增對 realpath 的第二層套用，不新增／移除黑名單項目。
- */
-export function isUnsafeRoot(path: string): boolean {
-  if (!path) return true;
-  const resolved = resolve(path);
-  const protectedRoots = new Set([sep, join(sep, "Users"), join(sep, "Volumes")]);
-  if (protectedRoots.has(resolved)) return true;
-  const real = resolveExistingRealpath(resolved);
-  // 無法解析出任何存在祖先 → 無法確認 containment → fail closed。
-  if (!real) return true;
-  return protectedRoots.has(real);
-}
-
-/**
- * 回傳 target 的真實路徑；target 不存在時逐層向上找最近的存在祖先解析，
- * 讓「root 尚未建立但其父鏈含 symlink」的情況也能被 containment 檢查涵蓋。
- * 連檔案系統根都無法解析時回傳 undefined（呼叫端 fail closed）。
- */
-function resolveExistingRealpath(target: string): string | undefined {
-  let current = target;
-  for (;;) {
-    try {
-      return realpathSync(current);
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return undefined;
-      current = parent;
-    }
-  }
 }
 
 /**

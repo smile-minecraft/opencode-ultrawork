@@ -10,7 +10,7 @@
 
 import type { Plugin } from "@opencode/plugin";
 import { createHash, randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   lstatSync,
   mkdirSync,
@@ -27,7 +27,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import { defineTool, type DefinedTool, type ToolExecutionContext } from "../../kit/define-tool.ts";
 import { jsonResult } from "../../kit/json.ts";
-import { isInsideWorktree, resolveInsideWorktree } from "../../kit/path-guard.ts";
+import { assertContainedPath, isInsideWorktree, isSensitivePath, resolveInsideWorktree } from "../../kit/path-guard.ts";
 import { isChangeScopeCheckAllowedAgent, CHANGE_SCOPE_CHECK_ALLOWED_AGENTS } from "./scope-check-policy.ts";
 import { isUnsafeRoot, resolveSessionDirectory } from "./session-root.ts";
 
@@ -159,17 +159,8 @@ function normalizeRelativePath(value: string): string {
   return normalized || ".";
 }
 
-/** 敏感路徑判斷（沿用舊版 search-tool-utils 語意）。 */
-function isSensitivePath(relativePath: string): boolean {
-  const parts = normalizeRelativePath(relativePath).split("/").filter(Boolean);
-  return parts.some((part) => {
-    const lower = part.toLowerCase();
-    if (lower === ".env.example") return false;
-    if (lower === ".env" || lower.startsWith(".env.")) return true;
-    if (["id_rsa", "id_ed25519", "credentials.json", "service-account.json"].includes(lower)) return true;
-    return /\.(?:pem|key|p12|pfx)$/i.test(lower);
-  });
-}
+/** 敏感路徑判斷只有 kit 一份；這裡轉匯出，保持既有 import 路徑可用。 */
+export { isSensitivePath } from "../../kit/path-guard.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -233,26 +224,88 @@ function parsePathList(raw: unknown, field: string):
   return { ok: true, specs };
 }
 
-function runGit(root: string, args: string[]): { ok: true; stdout: string } | { ok: false; unavailable: boolean } {
-  try {
-    const result = spawnSync("git", ["-C", root, ...args], {
-      encoding: "utf8",
-      maxBuffer: MAX_GIT_OUTPUT_BYTES,
-      stdio: ["ignore", "pipe", "ignore"],
+/** 單次 git 呼叫的上限；超過就 SIGKILL 並當成不可用，不卡住呼叫端。 */
+export const GIT_COMMAND_TIMEOUT_MS = 10_000;
+
+export type GitCommandResult =
+  | { ok: true; stdout: string; truncated: false }
+  | { ok: false; unavailable: boolean; truncated: boolean };
+
+/**
+ * 非同步的 git 呼叫（取代同步的 spawnSync：大輸出或卡住的 git 不再凍結事件迴圈）。
+ *
+ * - env 顯式傳目前的 process.env：Bun 的子程序預設拿啟動時的環境快照，
+ *   執行期對 PATH 的調整（例如測試放假 git）不傳就看不到。
+ * - 輸出上限 MAX_GIT_OUTPUT_BYTES；超過上限就算 exit code 0 也回失敗並標
+ *   truncated:true，不讓截斷的清單被當成完整快照（舊版 spawnSync 超過
+ *   maxBuffer 會直接報錯，同樣不等於成功）。
+ * - 逾時直接 SIGKILL。
+ */
+export function runGitCommand(
+  root: string,
+  args: string[],
+  timeoutMs = GIT_COMMAND_TIMEOUT_MS,
+): Promise<GitCommandResult> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let totalBytes = 0;
+    let overLimit = false;
+    let settled = false;
+    let child: ReturnType<typeof spawn> | undefined;
+    const done = (value: GitCommandResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child?.stdout?.destroy();
+      } catch {
+        // 忽略清理錯誤。
+      }
+      try {
+        if (child?.pid !== undefined) child.kill("SIGKILL");
+      } catch {
+        // 程序已結束。
+      }
+      done({ ok: false, unavailable: false, truncated: overLimit });
+    }, Math.max(1, timeoutMs));
+    if (typeof timer.unref === "function") timer.unref();
+    try {
+      child = spawn("git", ["-C", root, ...args], {
+        env: { ...process.env },
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+      });
+    } catch {
+      done({ ok: false, unavailable: false, truncated: false });
+      return;
+    }
+    child.stdout?.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      // 超限後繼續讀掉（否則子程序寫滿 pipe 會卡住），但不再累積內容。
+      if (totalBytes > MAX_GIT_OUTPUT_BYTES) {
+        overLimit = true;
+        return;
+      }
+      stdout += chunk.toString("utf8");
     });
-    if (result.error) return { ok: false, unavailable: (result.error as NodeJS.ErrnoException).code === "ENOENT" };
-    if (result.status !== 0) return { ok: false, unavailable: false };
-    return { ok: true, stdout: typeof result.stdout === "string" ? result.stdout : String(result.stdout ?? "") };
-  } catch {
-    return { ok: false, unavailable: false };
-  }
+    child.once("error", (error) => {
+      done({ ok: false, unavailable: (error as NodeJS.ErrnoException).code === "ENOENT", truncated: overLimit });
+    });
+    child.once("close", (code) => {
+      if (code === 0 && !overLimit) done({ ok: true, stdout, truncated: false });
+      else done({ ok: false, unavailable: false, truncated: overLimit });
+    });
+  });
 }
 
 function parseNulSeparated(raw: string): string[] {
   return raw.split("\0").filter(Boolean).map(normalizeRelativePath);
 }
 
-function collectGitSnapshot(root: string): GitSnapshot {
+async function collectGitSnapshot(root: string): Promise<GitSnapshot> {
   const unavailable: ScopeGitSummary = {
     available: false,
     statusAvailable: false,
@@ -260,17 +313,25 @@ function collectGitSnapshot(root: string): GitSnapshot {
     trackedFileCount: 0,
     untrackedFileCount: 0,
   };
-  const headResult = runGit(root, ["rev-parse", "--verify", "HEAD"]);
-  const trackedResult = runGit(root, ["ls-files", "-z"]);
-  const statusResult = runGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  if (!trackedResult.ok && !statusResult.ok) {
-    return { summary: unavailable, trackedPaths: new Set(), untrackedPaths: new Set(), statusByPath: new Map() };
-  }
-  const trackedPaths = new Set(trackedResult.ok ? parseNulSeparated(trackedResult.stdout) : []);
-  const untrackedResult = runGit(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
-  const untrackedPaths = untrackedResult.ok ? new Set(parseNulSeparated(untrackedResult.stdout)) : new Set<string>();
+  const empty = {
+    summary: unavailable,
+    trackedPaths: new Set<string>(),
+    untrackedPaths: new Set<string>(),
+    statusByPath: new Map<string, string>(),
+  };
+  const headResult = await runGitCommand(root, ["rev-parse", "--verify", "HEAD"]);
+  const trackedResult = await runGitCommand(root, ["ls-files", "-z"]);
+  const statusResult = await runGitCommand(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const untrackedResult = await runGitCommand(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  // tracked／status／untracked 都是必要清單：任一失敗（含超限）就整份不可用。
+  // 缺的清單不能當成空集合＋available，否則 includeGitFiles 掃描會安靜漏檔案。
+  // head 只是附加資訊（HEAD_CHANGED 判斷用），缺了不影響快照有效性。
+  if (!trackedResult.ok || !statusResult.ok || !untrackedResult.ok) return empty;
+  const trackedPaths = new Set(parseNulSeparated(trackedResult.stdout));
+  const untrackedPaths = new Set(parseNulSeparated(untrackedResult.stdout));
   const statusByPath = new Map<string, string>();
-  if (statusResult.ok) {
+  // 早退已保證 status 成功，這裡直接解析。
+  {
     const chunks = statusResult.stdout.split("\0").filter(Boolean);
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index]!;
@@ -356,6 +417,23 @@ function walkDirectory(
     return;
   }
   const absoluteDirectory = resolve(root, relativeDirectory);
+  // 起點本身是 symlink（例如指向專案外的目錄）就不往下走：readdirSync 會穿過
+  // 它列出外部檔案，後續即便逐檔擋下，這裡先停是最乾淨的 fail closed。
+  try {
+    if (lstatSync(absoluteDirectory).isSymbolicLink()) {
+      coverage.complete = false;
+      addIssue(coverage, { code: "SYMLINK_NOT_FOLLOWED", path: relativeDirectory, detail: "不追蹤 symbolic link，避免讀到 project 外內容。" });
+      return;
+    }
+  } catch (error) {
+    coverage.complete = false;
+    addIssue(coverage, {
+      code: "READ_FAILED",
+      path: relativeDirectory,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
   let entries: Dirent[];
   try {
     entries = readdirSync(absoluteDirectory, { withFileTypes: true });
@@ -435,6 +513,16 @@ function scanFileSummary(
   totalBytes: { value: number },
 ): ScopeFileSummary {
   const absolutePath = resolve(root, relativePath);
+  // 逐段 canonical containment：中間任一段是 symlink（例如指向專案外的目錄）
+  // 就不讀內容、不算 sha256。只 lstat 最後一段擋不住這種情況——lstat 會穿過
+  // 中間的 symlink 目錄，讀到的其實是專案外的檔案。
+  try {
+    assertContainedPath(root, absolutePath, { label: "change-scope" });
+  } catch {
+    coverage.complete = false;
+    addIssue(coverage, { code: "SYMLINK_NOT_FOLLOWED", path: relativePath, detail: "路徑經過 symlink 或解析後超出專案範圍，不讀取內容。" });
+    return { path: relativePath, state: "symlink", comparable: false, baselineDirty, reason: "SYMLINK_NOT_FOLLOWED" };
+  }
   let stats: ReturnType<typeof lstatSync>;
   try {
     stats = lstatSync(absolutePath);
@@ -877,7 +965,10 @@ const changeScopeCheckInputSchema: z.ZodType<ChangeScopeCheckInput> = z.object({
   allowedPaths: z.unknown().optional(),
 });
 
-export function createChangeScopeCheckTool(moduleCtx: Plugin.Context): DefinedTool {
+export function createChangeScopeCheckTool(
+  moduleCtx: Plugin.Context,
+  allowedAgents: readonly string[] = CHANGE_SCOPE_CHECK_ALLOWED_AGENTS,
+): DefinedTool {
   return defineTool({
     name: "change-scope-check",
     description: [
@@ -889,11 +980,11 @@ export function createChangeScopeCheckTool(moduleCtx: Plugin.Context): DefinedTo
     ].join("\n"),
     inputSchema: changeScopeCheckInputSchema,
     execute: async (input: ChangeScopeCheckInput, toolCtx: ToolExecutionContext) => {
-      if (!isChangeScopeCheckAllowedAgent(toolCtx.agent)) {
+      if (!isChangeScopeCheckAllowedAgent(toolCtx.agent, allowedAgents)) {
         return jsonResult({
           ok: false,
           code: "AGENT_NOT_ALLOWED",
-          error: `change-scope-check 僅限 ${CHANGE_SCOPE_CHECK_ALLOWED_AGENTS.join("／")} 使用。`,
+          error: `change-scope-check 僅限 ${allowedAgents.join("／")} 使用。`,
         });
       }
       const action = input?.action;
@@ -907,7 +998,7 @@ export function createChangeScopeCheckTool(moduleCtx: Plugin.Context): DefinedTo
       if (!allowedResult.ok) return jsonResult({ ok: false, code: allowedResult.code, error: allowedResult.error });
 
       if (action === "create") {
-        const git = collectGitSnapshot(rootResult.root);
+        const git = await collectGitSnapshot(rootResult.root);
         const includeGitFiles = input.includeGitFiles === true;
         const scan = scanProject(rootResult.root, pathResult.specs, git, includeGitFiles);
         const baseline: ChangeScopeBaseline = {
@@ -971,7 +1062,7 @@ export function createChangeScopeCheckTool(moduleCtx: Plugin.Context): DefinedTo
       if (baselineRoot !== rootResult.root || !isInsideWorktree(rootResult.root, baselineRoot) || !isInsideWorktree(baselineRoot, rootResult.root)) {
         return jsonResult({ ok: false, code: "CROSS_PROJECT", error: "變更摘要來自其他專案，不能拿來比較目前狀態。" });
       }
-      const git = collectGitSnapshot(rootResult.root);
+      const git = await collectGitSnapshot(rootResult.root);
       const baselinePaths = baseline.files.map((file) => file.path);
       const scan = scanProject(
         rootResult.root,
@@ -1009,6 +1100,13 @@ export function captureTrackedFileSnapshots(root: string, rawPaths: string[]): T
     if (!path) return { path: rawPath, state: "outside", comparable: false, reason: "PATH_OUTSIDE_WORKTREE_OR_GLOB" };
     if (isSensitivePath(path)) return { path, state: "sensitive", comparable: false, reason: "SENSITIVE_PATH" };
     const absolute = resolve(root, path);
+    // 跟 scanFileSummary 同一套逐段 canonical containment：symlink 目錄下的
+    // 專案外檔案不讀、不算 sha256（見上方的說明）。
+    try {
+      assertContainedPath(root, absolute, { label: "change-scope" });
+    } catch {
+      return { path, state: "symlink", comparable: false, reason: "SYMLINK_NOT_FOLLOWED" };
+    }
     let stats: ReturnType<typeof lstatSync>;
     try {
       stats = lstatSync(absolute);

@@ -12,7 +12,12 @@ import {
   isInsideWorktree,
   resolveInsideWorktree,
 } from "../../../src/kit/path-guard.ts";
-import { diagnoseContentWriteLock, withContentWriteLock } from "../../../src/kit/write-lock.ts";
+import {
+  ContentLockBusyError,
+  contentLockBusyGuidance,
+  diagnoseContentWriteLock,
+  withContentWriteLock,
+} from "../../../src/kit/write-lock.ts";
 import { fakeV2ToolContext } from "../_fake-v2-context.ts";
 
 describe("jsonResult 外框（對齊舊版 search-tool-utils）", () => {
@@ -239,5 +244,39 @@ describe("defineTool", () => {
     expect(JSON.parse((ok as any).content).path).toBe("a.txt");
     const bad = await tool.execute({ path: 42 }, fakeV2ToolContext() as any);
     expect(JSON.parse((bad as any).content).ok).toBe(false);
+  });
+});
+
+describe("ContentLockBusyError 訊息收斂（單一措辭）", () => {
+  test("ageSeconds 為 null 時不出現 null 字樣，只講可信的年齡", () => {
+    const err = new ContentLockBusyError({
+      heldByPid: 12345,
+      since: "2026-01-01T00:00:00.000Z",
+      ageSeconds: null,
+    });
+    expect(err.message).not.toContain("null");
+    expect(err.message).toContain("unlockStale");
+  });
+
+  test("持有者資訊全缺時不出現 null 字樣，仍保留 unlockStale 指引", () => {
+    const err = new ContentLockBusyError({ heldByPid: null, since: null, ageSeconds: null });
+    expect(err.message).not.toContain("null");
+    expect(err.message).toContain("unlockStale");
+  });
+
+  test("defineTool 外框的 nextAction 引用同一份指引（含門檻與 unlockStale）", async () => {
+    const tool = defineTool({
+      name: "busy-probe",
+      description: "鎖忙碌外框探針",
+      inputSchema: z.object({}),
+      execute: async () => {
+        throw new ContentLockBusyError({ heldByPid: 999, since: null, ageSeconds: 5 });
+      },
+    });
+    const out = await tool.execute({}, fakeV2ToolContext() as any);
+    const parsed = JSON.parse(out.content);
+    expect(parsed.code).toBe("CONTENT_LOCK_BUSY");
+    expect(parsed.nextAction).toBe(contentLockBusyGuidance());
+    expect(parsed.nextAction).toContain("unlockStale");
   });
 });

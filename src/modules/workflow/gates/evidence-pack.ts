@@ -40,6 +40,8 @@
 
 import { normalizeNewline } from "../core/helpers.ts";
 import { lineFenceState } from "../core/markdown-fence.ts";
+import type { UltraworkSettings } from "../../../settings/defaults.ts";
+import { asStringList } from "../../../settings/validate.ts";
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -64,9 +66,21 @@ export const EVIDENCE_PACK_SECTION_NUMBERS = ["1", "2", "3", "4", "5", "6", "7"]
 
 export type EvidencePackSectionName = (typeof EVIDENCE_PACK_SECTIONS)[number];
 
-/** 受 實作準備階段 強制驗證的 subagent_type（plugin 內 allowlist 子集）。 */
+/** 受 實作準備階段 強制驗證的 subagent_type（plugin 內 allowlist 子集）。
+ *
+ * 清單可用設定覆寫（workflow.evidencePack.gatedSubagents），預設等於下方常數；
+ * 設定給了非預期的值一律退回預設（由設定驗證層保證，這裡再擋一次是縱深）。
+ */
 export const EVIDENCE_PACK_GATED_SUBAGENTS = ["implementer", "debugger", "ultra-coder"] as const;
 export type EvidencePackGatedSubagent = (typeof EVIDENCE_PACK_GATED_SUBAGENTS)[number];
+
+/** 從設定解出實際受驗證的 subagent 清單；沒寫或寫壞都退回內建預設。 */
+export function resolveEvidencePackGatedSubagents(
+  settings: UltraworkSettings | undefined,
+): readonly string[] {
+  return asStringList(settings?.workflow?.evidencePack?.gatedSubagents)
+    ?? [...EVIDENCE_PACK_GATED_SUBAGENTS];
+}
 
 // ─── Error Types ─────────────────────────────────────────────
 

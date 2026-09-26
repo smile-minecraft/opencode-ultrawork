@@ -38,8 +38,9 @@ type ToolContext = ToolExecutionContext;
 import {
   assertSafePlansPath,
   deletePlanContentStrict,
+  inspectContentRef,
   planContentPath,
-  resolvePlansContentRef,
+  type ContentRefOwner,
 } from "../content/content-ref.ts";
 import { taskDependsOnPlanSection } from "../gates/plan-link-validation.ts";
 import { restoreBytesAtomic } from "../content/byte-restore.ts";
@@ -80,6 +81,34 @@ export class RegistryIOError extends Error {
 export interface RegistryTransactionDraft {
   tasks: TasksRegistry;
   plans: PlansRegistry;
+}
+
+/**
+ * 註冊檔裡的參照能不能解析成內容庫內的路徑；不能就回 `null` 並記一行 debug log。
+ *
+ * 為什麼 commit stage 不用會丟錯的解析：這裡解析出來的值只拿來做兩件事 ——
+ * 組「不要誤刪別人內容檔」的名單、決定被 prune 的計畫要刪哪個檔。兩者都發生在
+ * **別人**的資料上：一個殘留的舊引用（搬遷改寫漏一筆就會留下）如果讓這裡丟錯，
+ * `writeRegistry`／`writePlansRegistry`／`transactRegistries` 的每一次 commit 都會
+ * 失敗並回滾，於是「建立一個新計畫」這種與它無關的操作也一起被癱瘓
+ * （實地回報：`plan-state-sync({event:"create"})` 被舊計畫的 `.opencode/` 引用擋死）。
+ *
+ * 這不是放寬路徑保護：解析不到的引用一定在 `PLANS_DIR` 之外，本來就刪不到東西，
+ * 也不會與任何候選刪除檔同名同路，所以跳過它不會讓比對結果變寬鬆。真正要刪的
+ * 檔案在落盤前仍逐條過 `assertSafeContentPath`（fail-closed 不變）。跳過的引用
+ * 由 `workflow_doctor` 逐項回報，訊息裡帶持有者與修法。
+ */
+function bestEffortContentPath(
+  ref: string,
+  root: string,
+  plansDir: string,
+  owner: ContentRefOwner,
+  debugLog: (message: string) => void,
+): string | null {
+  const inspection = inspectContentRef(ref, root, plansDir, owner);
+  if (inspection.resolvedPath !== null) return inspection.resolvedPath;
+  debugLog(`Skipped unresolvable ${owner.field} of ${owner.owner} ${owner.id}: ${ref} — ${inspection.message ?? "path guard rejected it"}`);
+  return null;
 }
 
 export interface RegistryTransactionControl {
@@ -544,10 +573,27 @@ export function createRegistryIO(
     const survivingPlans = Object.values(prunedRegistry.plans);
     const survivingContentPaths = new Set<string>();
     for (const surviving of survivingPlans) {
-      if (surviving.contentRef) survivingContentPaths.add(pathIdentityKey(resolvePlansContentRef(surviving.contentRef, root, plansDir)));
+      if (surviving.contentRef) {
+        const refPath = bestEffortContentPath(
+          surviving.contentRef,
+          root,
+          plansDir,
+          { owner: "plan", id: surviving.planId, field: "contentRef" },
+          runtime.debugLog,
+        );
+        if (refPath) survivingContentPaths.add(pathIdentityKey(refPath));
+      }
       if (surviving.contentPath) {
-        assertSafePlansPath(surviving.contentPath, plansDir);
-        survivingContentPaths.add(pathIdentityKey(resolve(surviving.contentPath)));
+        // `contentPath` 是絕對路徑欄位（不走 contentRef 的前綴規則），所以維持原本
+        // 的 `assertSafePlansPath` + `resolve` 語意，只把「解析不到」從 throw 改成跳過。
+        try {
+          assertSafePlansPath(surviving.contentPath, plansDir);
+          survivingContentPaths.add(pathIdentityKey(resolve(surviving.contentPath)));
+        } catch (error) {
+          runtime.debugLog(
+            `Skipped unresolvable contentPath (plan ${surviving.planId}): ${surviving.contentPath} (${(error as Error).message})`,
+          );
+        }
       }
     }
     const queueContentDelete = (path: string, reason: string): void => {
@@ -632,10 +678,23 @@ export function createRegistryIO(
         runtime.debugLog(`Prune cleanup: no active section tasks dependent on plan ${planId} - safe to delete content`);
 
         if (plan.contentRef) {
-          queueContentDelete(resolvePlansContentRef(plan.contentRef, root, plansDir), "contentRef");
+          const refPath = bestEffortContentPath(
+            plan.contentRef,
+            root,
+            plansDir,
+            { owner: "plan", id: planId, field: "contentRef" },
+            runtime.debugLog,
+          );
+          if (refPath) queueContentDelete(refPath, "contentRef");
         } else if (plan.contentPath) {
-          assertSafePlansPath(plan.contentPath, plansDir);
-          queueContentDelete(resolve(plan.contentPath), "contentPath");
+          try {
+            assertSafePlansPath(plan.contentPath, plansDir);
+            queueContentDelete(resolve(plan.contentPath), "contentPath");
+          } catch (error) {
+            runtime.debugLog(
+              `Skipped unresolvable contentPath (pruned plan ${planId}): ${plan.contentPath} (${(error as Error).message})`,
+            );
+          }
         } else {
           const fixedPath = planContentPath(planId, plansDir);
           const fixedNameCollides = survivingPlans.some(
@@ -663,8 +722,17 @@ export function createRegistryIO(
           }
           // Finished task: safe to cleanup
           if (task.taskContentPath) {
-            const taskPath = resolvePlansContentRef(task.taskContentPath, root, plansDir);
-            queueContentDelete(taskPath, "taskContentPath");
+            const taskPath = bestEffortContentPath(
+              task.taskContentPath,
+              root,
+              plansDir,
+              { owner: "task", id: task.taskId, field: "taskContentPath" },
+              runtime.debugLog,
+            );
+            if (taskPath) queueContentDelete(taskPath, "taskContentPath");
+            // 解析不到就不排刪除（目標在內容庫外，守衛本來也不准刪），但引用照清：
+            // 這是既有行為（`taskContentPath` 在這個分支本來就會被清成 undefined），
+            // 而留著一筆用不了的引用只會讓 doctor 之外的地方再炸一次。
             task.taskContentPath = undefined;
           }
           // Clear section refs

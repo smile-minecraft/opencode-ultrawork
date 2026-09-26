@@ -99,11 +99,38 @@ describe("設定 JSON Schema", () => {
     expect(completion.requireMemoryReceipt!.default).toBe(
       DEFAULT_SETTINGS.workflow.completion.requireMemoryReceipt,
     );
+
+    const verification = defs.verification.properties as Record<string, Schema>;
+    expect(Object.keys(verification).sort()).toEqual(
+      Object.keys(DEFAULT_SETTINGS.verification).sort(),
+    );
+    expect(verification.runAllowedAgents!.type).toBe("array");
+    expect(verification.runAllowedAgents!.default).toEqual(
+      DEFAULT_SETTINGS.verification.runAllowedAgents,
+    );
+    expect(verification.scopeCheckAllowedAgents!.type).toBe("array");
+    expect(verification.scopeCheckAllowedAgents!.default).toEqual(
+      DEFAULT_SETTINGS.verification.scopeCheckAllowedAgents,
+    );
+
+    const workflow = defs.workflow.properties as Record<string, Schema>;
+    expect(Object.keys(workflow).sort()).toEqual(Object.keys(DEFAULT_SETTINGS.workflow).sort());
+    const evidencePack = (resolveRef(schema, "#/$defs/evidencePack").properties ?? {}) as Record<
+      string,
+      Schema
+    >;
+    expect(Object.keys(evidencePack)).toEqual(Object.keys(DEFAULT_SETTINGS.workflow.evidencePack));
+    expect(evidencePack.gatedSubagents!.type).toBe("array");
+    expect(evidencePack.gatedSubagents!.default).toEqual(
+      DEFAULT_SETTINGS.workflow.evidencePack.gatedSubagents,
+    );
   });
 
-  test("根層欄位就是 modules / skiller / skills / workflow", () => {
+  test("根層欄位就是 modules / skiller / skills / verification / workflow", () => {
     const rootProperties = (schema.properties ?? {}) as Record<string, Schema>;
-    expect(Object.keys(rootProperties).sort()).toEqual(["$schema", "modules", "skiller", "skills", "workflow"]);
+    expect(Object.keys(rootProperties).sort()).toEqual(
+      ["$schema", "modules", "skiller", "skills", "verification", "workflow"],
+    );
   });
 
   test("DEFAULT_SETTINGS 本身通過 schema", () => {
@@ -154,6 +181,26 @@ describe("設定 JSON Schema", () => {
       "",
     );
     expect(errors.join("\n")).toContain("/skiller/personalSkillRoot 的型別");
+  });
+
+  test("壞掉的範例被拒絕：授權清單給成字串", () => {
+    const errors = validate(
+      { verification: { runAllowedAgents: "momus" } } as unknown as JsonValue,
+      schema,
+      schema,
+      "",
+    );
+    expect(errors.join("\n")).toContain("/verification/runAllowedAgents 的型別");
+  });
+
+  test("壞掉的範例被拒絕：gatedSubagents 給成數字", () => {
+    const errors = validate(
+      { workflow: { evidencePack: { gatedSubagents: 0 } } } as unknown as JsonValue,
+      schema,
+      schema,
+      "",
+    );
+    expect(errors.join("\n")).toContain("/workflow/evidencePack/gatedSubagents 的型別");
   });
 
   test("部分覆寫也算合法：空物件與單一模組開關", () => {

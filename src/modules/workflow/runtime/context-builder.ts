@@ -26,7 +26,7 @@
  *   1. 定義 closure helpers → RuntimeBaseContext。
  *   2. createRegistryIO(base) → RegistryRuntimeContext。
  *   3. createStateProjection(registry) → StateProjectionRuntimeContext。
- *   4. createReceiptValidator(stateProjection) → FullUltraworkRuntimeContext。
+ *   4. 收據驗證委派給 memory 單一實作 → FullUltraworkRuntimeContext。
  *
  * 限制：
  *
@@ -34,7 +34,7 @@
  * @see ./context.ts                                       — path / binding 純函式
  * @see ./registry-io.ts                                   — registry IO closure
  * @see ./state-projection.ts                              — state.md writer
- * @see ./receipt-validator.ts                          — 同步紀錄 validator
+ * @see ../../memory/receipt-validator.ts               — 同步紀錄 validator（單一實作）
  */
 
 import { existsSync, mkdirSync } from "node:fs";
@@ -48,7 +48,7 @@ import { deriveProjectId } from "../core/helpers.ts";
 import { getPathsForRoot, isUnsafeRoot, type Paths } from "./context.ts";
 import { createRegistryIO, type RegistryIOOptions, type RegistryRuntimeContext } from "./registry-io.ts";
 import { createStateProjection, type StateProjectionRuntimeContext } from "./state-projection.ts";
-import { createReceiptValidator, type ReceiptValidationResult } from "./receipt-validator.ts";
+import { validateReceiptForCompletion, type ReceiptValidationResult } from "../../memory/index.ts";
 
 // ─── Layer 1：RuntimeBaseContext ─────────────────────────────
 
@@ -116,7 +116,7 @@ export interface FullUltraworkRuntimeContext extends StateProjectionRuntimeConte
     | { ok: true; status: "disabled" | "not-reported" | "passed" }
     | { ok: false; code: "COMMENT_SIGNAL_BLOCKED"; error: string }
   >;
-  /** 對應 closure `validateMemoryReceiptForTask`：專案記憶更新階段 memory 更新紀錄 gate 核心。 */
+  /** 收據驗證（委派給 memory 模組的單一實作）：專案記憶更新階段 memory 更新紀錄 gate 核心。 */
   validateMemoryReceiptForTask(
     receiptId: string,
     task: Task,
@@ -132,9 +132,6 @@ export type UltraworkRuntimeContext = FullUltraworkRuntimeContext;
 
 /** 對外暴露：state-projection factory 接受的 context。 */
 export type StateProjectionDeps = RegistryRuntimeContext;
-
-/** 對外暴露：更新紀錄 validator factory 接受的 context。 */
-export type ReceiptValidatorDeps = StateProjectionRuntimeContextEx;
 
 /**
  * `createRuntimeContext` 輸入參數。
@@ -247,7 +244,7 @@ function buildBaseContext(
  *   1. Layer 1 factory → RuntimeBaseContext。
  *   2. Layer 2 factory（createRegistryIO）→ RegistryRuntimeContext。
  *   3. Layer 3 factory（createStateProjection）→ StateProjectionRuntimeContextEx。
- *   4. Layer 4 factory（createReceiptValidator）→ FullUltraworkRuntimeContext。
+ *   4. 收據驗證委派（memory 單一實作）→ FullUltraworkRuntimeContext。
  *
  * 每層 factory 接受對應上層型別作 DI，**無** `as unknown as` cast。
  */
@@ -271,14 +268,20 @@ export function createRuntimeContext(input: CreateRuntimeContextInput): FullUltr
     updateStateMd: createStateProjection(registry),
   };
 
-  // Layer 4: 更新紀錄 validator 完成 FullUltraworkRuntimeContext
+  // Layer 4: 收據驗證直接委派給 memory 模組的單一實作（規則只存在一份）。
   const full: FullUltraworkRuntimeContext = {
     ...withStateProjection,
     memoryReceiptRequired: true,
     async validateCommentSignalForCompletion() {
       return { ok: true, status: "not-reported" };
     },
-    validateMemoryReceiptForTask: createReceiptValidator(withStateProjection),
+    validateMemoryReceiptForTask: (receiptId, task, currentProject, context) =>
+      validateReceiptForCompletion(
+        withStateProjection.resolveProjectRoot(context),
+        receiptId,
+        { taskId: task.taskId },
+        currentProject,
+      ),
   };
 
   return full;

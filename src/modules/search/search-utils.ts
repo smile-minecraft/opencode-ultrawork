@@ -7,15 +7,20 @@
  */
 
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import type { Plugin } from "@opencode/plugin";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 import { jsonError } from "../../kit/json.ts";
 import {
   AssertPathOutsideWorktree,
   assertSafeWorktreePath,
+  isSensitivePath,
+  isUnsafeRoot,
   resolveInsideWorktree,
 } from "../../kit/path-guard.ts";
+
+/** 黑名單與敏感清單的判定只有 kit 一份；這裡轉匯出，保持既有 import 路徑可用。 */
+export { isSensitivePath, isUnsafeRoot } from "../../kit/path-guard.ts";
 
 export interface ReadableTarget {
   absolutePath: string;
@@ -45,58 +50,9 @@ export async function resolveWorktreeRoot(ctx: Plugin.Context, toolCtx: ToolExec
   return ctx.location.project?.directory ?? ctx.location.directory;
 }
 
-/**
- * 黑名單：根目錄或系統關鍵目錄不能當搜尋起點。
- *
- * 自舊 runtime/context.ts 逐字搬入，黑名單項目完全一致；
- * lexical 檢查之外，另對 realpath 後的真實路徑再套一次，
- * symlink alias（如指向 / 的連結）才不會溜過去。
- */
-export function isUnsafeRoot(path: string): boolean {
-  if (!path) return true;
-  const resolved = resolve(path);
-  // 嚴禁在根目錄或系統關鍵目錄建立 .opencode
-  if (resolved === "/" || resolved === "" || resolved === "." || resolved === ".." || resolved === "/Users" || resolved === "/Volumes") {
-    return true;
-  }
-  const real = resolveExistingRealpath(resolved);
-  // 無法解析出任何存在祖先 → 無法確認 containment → fail closed。
-  if (!real) return true;
-  return real === "/" || real === "/Users" || real === "/Volumes";
-}
-
-/**
- * 回傳 target 的真實路徑；target 不存在時逐層向上找最近的存在祖先解析，
- * 讓「root 尚未建立但其父鏈含 symlink」的情況也能被 containment 檢查涵蓋。
- * 連檔案系統根都無法解析時回傳 undefined（呼叫端 fail closed）。
- */
-function resolveExistingRealpath(target: string): string | undefined {
-  let current = target;
-  for (;;) {
-    try {
-      return realpathSync(current);
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return undefined;
-      current = parent;
-    }
-  }
-}
-
 export function normalizeRelativePath(value: string): string {
   const normalized = value.split("\\").join("/");
   return normalized || ".";
-}
-
-export function isSensitivePath(relativePath: string): boolean {
-  const parts = normalizeRelativePath(relativePath).split("/").filter(Boolean);
-  return parts.some((part) => {
-    const lower = part.toLowerCase();
-    if (lower === ".env.example") return false;
-    if (lower === ".env" || lower.startsWith(".env.")) return true;
-    if (["id_rsa", "id_ed25519", "credentials.json", "service-account.json"].includes(lower)) return true;
-    return /\.(?:pem|key|p12|pfx)$/i.test(lower);
-  });
 }
 
 export function resolveReadableTarget(

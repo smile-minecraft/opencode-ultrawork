@@ -3,11 +3,13 @@
  *
  * 這不是可開關模組，由外掛入口 `setupUltrawork` 直接呼叫一次。規則（企劃書 4.4 節）：
  *
- * 1. 某一層只做一次：`<層>/.ultrawork/.migrated-from-opencode.json` 存在就整層跳過。
+ * 1. 每一層只做一次：標記檔存在**且涵蓋這一層**就整層跳過（見 `marker.ts` 的分層規則；
+ *    `projectDir == globalDir` 時兩層共用同一份檔案，專案層的標記不再讓全域層早退）。
  * 2. 逐項處理：目標已存在 → 記警告並跳過（舊檔留在原地、不改名）；
  *    目標不存在 → 複製到新位置，再把舊檔改名成 `<原檔名>.migrated-<時間戳>`。
  *    **永遠不刪除使用者資料。**
- * 3. 標記檔只在該層整趟沒有失敗時才寫；全部跳過也算成功。
+ * 3. 標記檔只在該層整趟沒有失敗時才寫；全部跳過也算成功。標記是分層的
+ *   （`version: 2` 的 `layers`，見 `marker.ts`）：寫入時合併另一層的記錄，不覆寫。
  * 4. 任一項失敗 → 該層停止、不寫標記、不影響外掛載入。下次啟動重跑時，
  *    已搬的項目因為目標已存在而自然被跳過（冪等收斂）。
  * 5. 凡搬遷會觸及的路徑（每個 `from` 的父層、每個 `to` 的父層，以及標記檔自身
@@ -19,10 +21,18 @@
 
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { atomicWriteFileWithOps } from "../kit/atomic-write.ts";
-import { assertContainedPath, isInsideWorktree } from "../kit/path-guard.ts";
+import { assertContainedPath, isInsideWorktree, isUnsafeRoot } from "../kit/path-guard.ts";
 import { resolveGlobalUltraworkDir, resolveProjectUltraworkDir } from "../settings/paths.ts";
+import { needsContentRefRewrite, repairMigratedCopy, rewriteMigratedContentRefs } from "./content-refs.ts";
 import { nodeMigrateFsOps } from "./fs-ops.ts";
 import { GLOBAL_MIGRATION_ITEMS, LEGACY_PROJECT_SOURCES, PROJECT_MIGRATION_ITEMS, type MigrationItem } from "./items.ts";
+import {
+  buildMarkerDocument,
+  markerCoversLayer,
+  readMarkerDocument,
+  type MarkerLayerRecord,
+  type MigrationLayer,
+} from "./marker.ts";
 import type {
   MigrateFsOps,
   MigrateLayerOptions,
@@ -39,12 +49,27 @@ import type {
 export const MIGRATION_MARKER_FILE = ".migrated-from-opencode.json";
 
 /**
- * `.ultrawork/.gitignore` 的內容。
+ * `.ultrawork/.gitignore` 的內容：只有 `*` 一行。
  *
- * `*` 忽略全部（含 cache/ 與資料檔），只留設定檔與檔案自己。
- * 唯讀外掛不該把使用者的資料檔送進版控。
+ * 目錄內全部忽略（含忽略檔自己與 `ultrawork.jsonc`）：`.ultrawork/` 是本機工作流
+ * 狀態，不進版控。以前模板豁免過 `.gitignore` 與 `ultrawork.jsonc`，既有專案的
+ * 舊檔案不會被自動改寫（見 `ensureUltraworkGitignore`），想跟新模板一致就手動刪行。
  */
-export const ULTRAWORK_GITIGNORE_CONTENT = "*\n!.gitignore\n!ultrawork.jsonc\n";
+export const ULTRAWORK_GITIGNORE_CONTENT = "*\n";
+
+/**
+ * `.ultrawork/.gitignore` 的必要行：有 `*` 這一行就視為正常。
+ *
+ * 使用者自訂內容（例如自己加回豁免行）不再每次啟動警告；缺 `*` 才警告。
+ * 診斷端（`workflow_doctor`）用同一個判準，兩端對同一個檔案給同一個答案。
+ */
+export const ULTRAWORK_GITIGNORE_REQUIRED_LINES: readonly string[] = ["*"];
+
+/** 這份 `.gitignore` 內容是否包含所有必要行（逐行比對，前後空白忽略）。 */
+export function ultraworkGitignoreHasRequiredLines(content: string): boolean {
+  const lines = new Set(content.split("\n").map((line) => line.trim().replace(/\r$/, "")));
+  return ULTRAWORK_GITIGNORE_REQUIRED_LINES.every((required) => lines.has(required));
+}
 
 /** 逐項搬遷一整層（專案層或全域層）。 */
 export function migrateProjectData(options: MigrateLayerOptions): ProjectMigrationResult {
@@ -92,13 +117,18 @@ export function runMigrations(options: RunMigrationsOptions): RunMigrationsResul
 /**
  * 建立 `<專案>/.ultrawork/.gitignore`；已存在就不覆寫。
  *
- * 內容與預設相同時不算警告（正常狀態）；內容不同才提示，因為那通常代表使用者
- * 自己改過或上一版外掛寫了別的內容。
+ * 內容有必要行（`*`）就不算警告（正常狀態，含使用者自訂的豁免行）；缺必要行才提示，
+ * 因為那通常代表使用者自己改過或上一版外掛寫了別的內容。既有檔案永遠不自動改寫。
  */
 export function ensureUltraworkGitignore(root: string, fs: MigrateFsOps = nodeMigrateFsOps()): MigrationGitignoreOutcome {
   // 根目錄不合法時直接什麼都不做：`resolve()` 會把它解到 cwd，
   // 那就等於在專案外寫檔。
   if (!isUsableRoot(root)) return { path: "", created: false };
+  // unsafe root 同樣什麼都不建：搬遷層已經整層拒絕，這裡是第二道門，
+  // 避免在系統根或家目錄下長出 `.ultrawork/.gitignore`。
+  if (isUnsafeRoot(root)) {
+    return { path: join(resolveProjectUltraworkDir(root), ".gitignore"), created: false };
+  }
   const path = join(resolveProjectUltraworkDir(root), ".gitignore");
   // 與搬遷同一套封頂判準：`.ultrawork` 是 symlink 時不在外部建立任何檔案。
   const unsafe = unsafeParentDetail(root, path, "搬遷路徑（.gitignore）");
@@ -115,9 +145,9 @@ export function ensureUltraworkGitignore(root: string, fs: MigrateFsOps = nodeMi
     return {
       path,
       created: false,
-      ...(existing === ULTRAWORK_GITIGNORE_CONTENT
+      ...(existing !== undefined && ultraworkGitignoreHasRequiredLines(existing)
         ? {}
-        : { warning: `${path} 已存在且內容與預設不同，未覆寫` }),
+        : { warning: `${path} 已存在且缺少必要行 \`*\`，未覆寫（既有檔案不會被自動改寫）` }),
     };
   }
   fs.mkdirSync(dirname(path), { recursive: true });
@@ -144,19 +174,25 @@ export function ensureUltraworkGitignore(root: string, fs: MigrateFsOps = nodeMi
  */
 export function inspectProjectMigration(
   projectRoot: string,
-  fs: Pick<MigrateFsOps, "existsSync" | "lstatSync"> = nodeMigrateFsOps(),
+  fs: Pick<MigrateFsOps, "existsSync" | "lstatSync" | "readFileSync"> = nodeMigrateFsOps(),
 ): MigrationStateReport {
   const markerPath = join(resolveProjectUltraworkDir(projectRoot), MIGRATION_MARKER_FILE);
-  const markerExists = fs.existsSync(markerPath);
+  // 「標記存在」指「涵蓋專案層的標記存在」：共用目錄裡只有全域層記錄的標記、
+  // 空舊標記、讀不懂的標記，對專案層來說都等於沒有（搬移端同一個情況會續搬，
+  // 見 `migrateLayer` 與 `marker.ts` —— 兩端調的是同一個 `markerCoversLayer`）。
+  const markerFilePresent = fs.existsSync(markerPath);
+  const markerExists = markerFilePresent && markerCoversLayer(readMarkerDocument(fs, markerPath), "project");
   const legacySources = LEGACY_PROJECT_SOURCES.filter((source) =>
     legacyEntryExists(fs, resolve(projectRoot, source)),
   );
-  const base = { markerPath, markerExists, legacySources };
-  if (markerExists) {
-    // 標記檔的父層就是 `.ultrawork/`。搬移端在「標記已存在」時也會對這個父層做
-    // 同一個封頂判準，所以診斷端不能只看標記存在就說「已完成」。
+  const base = { markerPath, markerExists, markerFilePresent, legacySources };
+  // 檔案在就先看父層封頂：搬移端讀到既存標記（無論涵蓋哪一層）一定先過這一關，
+  // 不通過就記 `unsafe-path` 失敗；診斷端跟著回 `pending`，兩端才一致。
+  if (markerFilePresent) {
     const unsafe = markerParentUnsafeDetail(projectRoot, markerPath);
     if (unsafe !== undefined) return { ...base, pending: true, reason: "unsafe-path", detail: unsafe };
+  }
+  if (markerExists) {
     return { ...base, pending: false };
   }
   const pending = legacySources.length > 0;
@@ -260,7 +296,7 @@ function emptyResult(layer: "project" | "global"): MigrationResult {
 }
 
 function migrateLayer(
-  layer: "project" | "global",
+  layer: MigrationLayer,
   options: MigrateLayerOptions,
   items: readonly MigrationItem[],
   ultraworkDirOf: (root: string) => string,
@@ -275,11 +311,26 @@ function migrateLayer(
     return { ...result, ok: true };
   }
   result.markerPath = join(ultraworkDirOf(root), MIGRATION_MARKER_FILE);
+  // unsafe root（系統根、關鍵目錄、家目錄本身）整層拒絕：不讀、不寫、不標記。
+  // 家目錄入列是使用者裁定；各模組行為一致，搬遷也不例外。
+  if (isUnsafeRoot(root)) {
+    return failLayer(result, {
+      from: result.markerPath,
+      to: result.markerPath,
+      status: "failed",
+      reason: "unsafe-path",
+      detail: `unsafe project root，拒絕搬遷：${root}`,
+    });
+  }
+  // 檔案在才有「已搬過」的問題：先過封頂（`.ultrawork/` 是 symlink 時那個宣告指向的是
+  // 外部目錄，不通過就記 `unsafe-path` 失敗、不視為已完成，下次啟動仍會嘗試並持續回報），
+  // 再看標記涵不涵蓋這一層。讀不到／不是 JSON／根不是物件的標記不當成完成
+  // （和診斷端同一個 `markerCoversLayer`）：安全地重跑一輪，目標已存在就跳過不覆寫，
+  // 順手把標記修成可讀的分層格式；空的舊標記同理（見 `marker.ts`：舊版沒舊資料也會
+  // 寫空標記，空證明不了哪一層做過）。
+  // 「標記已經在了」也是一條搬遷路徑：這一行等於宣告「`<root>/.ultrawork/` 就是本專案
+  // 的資料位置」。
   if (fs.existsSync(result.markerPath)) {
-    // 「標記已經在了」也是一條搬遷路徑：這一行等於宣告「`<root>/.ultrawork/` 就是本專案
-    // 的資料位置」。`.ultrawork/` 是 symlink 時那個宣告指向的是外部目錄，本專案的舊資料
-    // 也就永遠不會被搬 —— 所以這裡一樣要過封頂，不通過就記 `unsafe-path` 失敗
-    // （不視為已完成，下次啟動仍會嘗試並持續回報），而不是靜默回 `alreadyMigrated`。
     const unsafe = unsafeParentDetail(root, result.markerPath);
     if (unsafe !== undefined) {
       return failLayer(result, {
@@ -290,7 +341,13 @@ function migrateLayer(
         detail: unsafe,
       });
     }
-    return { ...result, alreadyMigrated: true };
+    // 分層判定：標記不涵蓋這一層（共用目錄的另一層標記、空舊標記、讀不懂的舊標記、
+    // 根本沒有標記）就不早退，掉進下面的逐項迴圈續搬，最後把記錄合併寫回同一份檔案。
+    // `undefined`（沒檔案／讀不到／非 JSON／根非物件）本來就不涵蓋，所以這裡不需要
+    // 額外守衛 —— 和診斷端調的是同一個 `markerCoversLayer`，同一個磁碟現況同一個答案。
+    if (markerCoversLayer(readMarkerDocument(fs, result.markerPath), layer)) {
+      return { ...result, alreadyMigrated: true };
+    }
   }
 
   for (const item of items) {
@@ -301,6 +358,41 @@ function migrateLayer(
     const unsafe = unsafeParentDetail(root, from) ?? unsafeParentDetail(root, to);
     if (unsafe !== undefined) {
       return failLayer(result, { from, to, status: "failed", reason: "unsafe-path", detail: unsafe });
+    }
+    // Registry 複本的就地修復（一定要在來源檢查之前）：
+    //
+    // 上次複製成功、改寫失敗時，來源已按流程封存、複本留著會被路徑守衛拒絕的舊參照。
+    // 重跑時來源已經不在了 —— 若先判 `source-missing` 就直接跳過，改寫永遠沒機會重試，
+    // 完成標記一下去，舊參照就卡死在那裡。所以先看複本，但只修能證明是我們的：
+    // `repairMigratedCopy` 用「目標位元組 == 某份來源封存檔」辨認（辨認依據見該函式），
+    // 證明不了（使用者原本就有的目標）就一個位元組都不改，往下走正常跳過；
+    // 若那份外來檔案裡有舊參照，在跳過的 detail 加註請使用者自行處理（回報、不動手）。
+    // 修不好（I/O）就整層停止、不寫標記，下次再試。
+    let foreignLegacyRefs = 0;
+    if (layer === "project" && needsContentRefRewrite(relative(root, to)) && fs.existsSync(to)) {
+      try {
+        const verdict = repairMigratedCopy(fs, from, to);
+        if (verdict.kind === "repaired") {
+          const outcome: MigrationItemOutcome = {
+            from,
+            to,
+            status: "migrated",
+            detail: `重跑時修復已存在複本的 ${verdict.count} 處舊參照（.opencode/ → .ultrawork/）`,
+          };
+          result.items.push(outcome);
+          result.migrated.push(outcome);
+          continue;
+        }
+        if (verdict.kind === "foreign") foreignLegacyRefs = verdict.legacyRefs;
+      } catch (error) {
+        return failLayer(result, {
+          from,
+          to,
+          status: "failed",
+          reason: "copy-failed",
+          detail: `已存在複本的舊參照修復失敗：${errorMessage(error)}`,
+        });
+      }
     }
     if (!legacyEntryExists(fs, from)) {
       result.items.push({
@@ -319,7 +411,10 @@ function migrateLayer(
         to,
         status: "skipped",
         reason: "target-exists",
-        detail: "新位置已有資料，未覆寫；舊檔留在原地",
+        detail:
+          foreignLegacyRefs > 0
+            ? "新位置已有資料，未覆寫；舊檔留在原地；新位置檔案仍含 .opencode/ 舊參照，但無法確認是搬遷複本、未修改，請自行把參照換成 .ultrawork/ 前綴"
+            : "新位置已有資料，未覆寫；舊檔留在原地",
       });
       result.skipped.push(result.items[result.items.length - 1]);
       continue;
@@ -327,6 +422,18 @@ function migrateLayer(
     try {
       const archivedTo = copyThenRename(from, to, fs, archiveOldPath(from, fs, now()));
       const outcome: MigrationItemOutcome = { from, to, status: "migrated", archivedTo };
+      // 註冊檔複本的舊 `contentRef`（`.opencode/…`）在新位置是死路（路徑守衛只認
+      // `.ultrawork/`）：搬完當下就換成新前綴。改名保留的舊檔維持原樣。
+      // 改寫失敗（I/O）走整層停止、下次重試；來源本來就不是合法 JSON 則原樣保留
+      // （由改寫函式回 `undefined` 標示，不視為失敗，舊資料一律不丟）。
+      if (layer === "project" && needsContentRefRewrite(relative(root, to))) {
+        const rewritten = rewriteMigratedContentRefs(fs, to);
+        if (rewritten === undefined) {
+          outcome.detail = "註冊檔不是合法 JSON，原樣保留未改寫舊參照";
+        } else if (rewritten > 0) {
+          outcome.detail = `已改寫 ${rewritten} 處舊參照（.opencode/ → .ultrawork/）`;
+        }
+      }
       result.items.push(outcome);
       result.migrated.push(outcome);
     } catch (error) {
@@ -340,7 +447,7 @@ function migrateLayer(
       });
     }
   }
-  return finishLayer(result, root, fs, now, true);
+  return finishLayer(result, root, fs, now, layer);
 }
 
 /** 記下一個失敗項目並讓該層整趟停止：不寫標記，下次啟動重跑。 */
@@ -355,12 +462,16 @@ function finishLayer(
   root: string,
   fs: MigrateFsOps,
   now: () => Date,
-  writeMarker: boolean,
+  layer: MigrationLayer,
 ): MigrationResult {
-  if (!writeMarker) return { ...result, ok: false };
+  // 寫標記前先重讀：共用目錄時另一層可能在這次執行稍早寫過（`runMigrations` 先跑專案層
+  // 再跑全域層），直接覆寫會丟掉那一層的記錄。`buildMarkerDocument` 負責合併。
+  const existing = readMarkerDocument(fs, result.markerPath);
+  const record = markerLayerRecord(result, root, now());
+  const document = buildMarkerDocument(existing ?? undefined, layer, record);
   try {
     fs.mkdirSync(dirname(result.markerPath), { recursive: true });
-    atomicWriteFileWithOps(result.markerPath, JSON.stringify(markerPayload(result, root, now()), null, 2) + "\n", fs);
+    atomicWriteFileWithOps(result.markerPath, `${JSON.stringify(document, null, 2)}\n`, fs);
   } catch (error) {
     result.items.push({
       from: result.markerPath,
@@ -375,10 +486,9 @@ function finishLayer(
   return { ...result, ok: true };
 }
 
-/** 標記檔內容；相對於該層根目錄，換機器也讀得懂。 */
-function markerPayload(result: MigrationResult, root: string, migratedAt: Date): Record<string, unknown> {
+/** 某一層的完成記錄；路徑相對於該層根目錄，換機器也讀得懂。 */
+function markerLayerRecord(result: MigrationResult, root: string, migratedAt: Date): MarkerLayerRecord {
   return {
-    version: 1,
     migratedAt: migratedAt.toISOString(),
     items: result.migrated.map((outcome) => ({
       from: relative(root, outcome.from),
@@ -426,10 +536,19 @@ function copyThenRename(
 }
 
 function copyTree(from: string, to: string, fs: MigrateFsOps): void {
-  if (fs.statSync(from).isDirectory()) {
+  // 來源樹的 symlink 一律不跟隨：頂層項目本身與遞迴中的巢狀項目都一樣，
+  // 遇到 symlink 就讓該項失敗（copy-failed、不寫標記、下次重試），不把
+  // 外部資料讀進來。`unsafeParentDetail` 只檢查來源路徑的父層，擋不住
+  // 「項目本身是 symlink」（例如 `skill-drafts` 指向專案外目錄），所以
+  // 這裡每一層都用 `lstatSync` 判斷；不再需要 depth 區分。
+  const entry = fs.lstatSync(from);
+  if (entry.isSymbolicLink()) {
+    throw new Error(`來源是 symlink，不跟隨複製：${from}`);
+  }
+  if (entry.isDirectory()) {
     fs.mkdirSync(to, { recursive: true });
-    for (const entry of [...fs.readdirSync(from)].sort()) {
-      copyTree(join(from, entry), join(to, entry), fs);
+    for (const name of [...fs.readdirSync(from)].sort()) {
+      copyTree(join(from, name), join(to, name), fs);
     }
     return;
   }
@@ -461,10 +580,10 @@ function joinLayerPath(root: string, relativePath: string): string {
  * 沿用 `kit/path-guard` 的同一套判斷（以該層根目錄為錨、逐段 lstat、canonical 落錨內），
  * 這是 skiller 對「模組資料夾是外部 symlink」既有 fail-closed 語意的同一個來源。
  *
- * 只看父層、不看項目本身：項目自己是 symlink 時（例如 `skills-policy.json` 指向
- * 檔案）語意不變，照常複製內容、舊 symlink 改名保留。要擋的是「搬遷會穿過
- * symlink 動手」—— `<專案>/.opencode` 或 `<專案>/.ultrawork` 是 symlink 時，
- * 寫進去的其實是別處的目錄。
+ * 只看父層、不看項目本身：項目本身是 symlink 時由 `copyTree` 拒絕（每層
+ * `lstatSync`、一律不跟隨），這裡只負責「搬遷會穿過 symlink 動手」的情況 ——
+ * `<專案>/.opencode` 或 `<專案>/.ultrawork` 是 symlink 時，寫進去的其實是
+ * 別處的目錄。
  *
  * `allowMissingAnchor` 讓根目錄還沒建立的情況維持原行為（照樣建 `.ultrawork/`）：
  * 錨點存在時這個選項不影響任何判斷。

@@ -12,9 +12,9 @@
  * 設計重點：
  *   - 純函式；無 closure、無 IO。
  *   - JS-family（含 JVM .java/.kt/.kts/.groovy）採 slash-slash line 與
- *     slash-star block；CSS 用同樣 token 但關掉 slash-slash；YAML/Shell
- *     用 #；HTML-family 用 HTML comment markers 並對 script 內容再做
- *     JS 二次處理。
+ *     slash-star block；CSS 用同樣 token 但關掉 slash-slash；YAML/Shell/
+ *     Python/TOML 用 #（Python/TOML 另跳過三引號多行字串內容）；HTML-family
+ *     用 HTML comment markers 並對 script 內容再做 JS 二次處理。
  *   - template literal 內 ${...} interpolation 視為可執行 code：其中
  *     的 comment markers 仍會被視為 comment；純 template raw text（一對
  *     反引號之間、無 interpolation 的部分）視為字串 literal，跳過。
@@ -64,6 +64,14 @@ import type { SourceCommentLine } from "./types.ts";
 const JVM_TRIPLE_QUOTE_EXTENSIONS = new Set([".java", ".kt", ".kts", ".groovy"]);
 
 /**
+ * `#` 註解語言的副檔名集合：hash lexer 負責抽取，parser 接受 `#` tag header。
+ * `.sh`／`.yaml`／`.yml` 為既有成員（沿用既有逐行 quote 追蹤，不開 triple）；
+ * `.py`／`.toml` 為新增成員（三引號多行字串內的 `#` 不算註解，見
+ * `extractHashCommentLines` 的 `tripleQuotes` 選項）。
+ */
+export const HASH_COMMENT_EXTENSIONS = new Set([".sh", ".yaml", ".yml", ".py", ".toml"]);
+
+/**
  * JVM triple-quote 模式設定。
  *
  * 依 JVM 語言副檔名 dispatch 不同行為：
@@ -102,6 +110,11 @@ export function extractSourceCommentLines(
   filePath: string,
 ): SourceCommentLine[] {
   const extension = filePath.toLowerCase().match(/\.[^.\/]+$/)?.[0] ?? "";
+  if (extension === ".py" || extension === ".toml") {
+    // `#` 註解＋三引號多行字串（docstring／多行字面）：字串內容的 `#`
+    // 不算註解，否則文件範例會變成 phantom comment。
+    return extractHashCommentLines(source, { tripleQuotes: true });
+  }
   if (extension === ".yaml" || extension === ".yml" || extension === ".sh") {
     return extractHashCommentLines(source);
   }
@@ -135,20 +148,69 @@ export function extractSourceCommentLines(
   return extractJsStyleCommentLines(source, true, false);
 }
 
-// ─── Hash Comment Lexer（YAML / Shell） ────────────────────────
+// ─── Hash Comment Lexer（YAML / Shell / Python / TOML） ──────────
+
+/**
+ * hash lexer 選項。
+ */
+export interface HashLexerOptions {
+  /**
+   * 是否跳過三引號多行字串（`"""`／`'''`）內容。
+   * `.py` docstring 與 `.toml` 多行字串內的 `#` 不是註解，不開會產生
+   * phantom comment；`.sh`／`.yaml`／`.yml` 沿用既有行為（不開）。
+   *
+   * 反斜線視為 escape（`\"""` 不關閉）：跟 JVM text block 同規則；
+   * `r"""..."""` raw 字串內含 `\"""` 的極端情況仍可能誤判，屬已知殘留。
+   */
+  tripleQuotes?: boolean;
+}
+
+/**
+ * 在單行內從 `from` 找三引號收尾（honor 反斜線 escape）。
+ * @returns 收尾 delimiter 起始欄；找不到回 -1。
+ */
+function findTripleCloser(line: string, from: number, delimiter: '"' | "'"): number {
+  let escaped = false;
+  for (let i = from; i + 2 < line.length; i++) {
+    const char = line[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === delimiter && line[i + 1] === delimiter && line[i + 2] === delimiter) {
+      return i;
+    }
+  }
+  return -1;
+}
 
 /**
  * 逐字元掃描，命中行首（quote 之外）的 # 起為 comment。
  * Shell 變數展開（${...}）仍維持在同一 quote 模式內處理，跳過。
  */
-export function extractHashCommentLines(source: string): SourceCommentLine[] {
+export function extractHashCommentLines(source: string, options: HashLexerOptions = {}): SourceCommentLine[] {
   const out: SourceCommentLine[] = [];
+  const triple = options.tripleQuotes === true;
   const lines = source.replace(/\r\n/g, "\n").split("\n");
+  // 跨行三引號字串狀態：null 表示不在字串內，否則為開啟的引號種類。
+  let tripleDelimiter: '"' | "'" | null = null;
   for (let index = 0; index < lines.length; index++) {
     const current = lines[index];
+    let column = 0;
+    // 上一行結束時仍在三引號字串內：本行先找收尾，整行找不到就整行跳過。
+    if (tripleDelimiter !== null) {
+      const closer = findTripleCloser(current, 0, tripleDelimiter);
+      if (closer === -1) continue;
+      column = closer + 3;
+      tripleDelimiter = null;
+    }
     let quote: "single" | "double" | null = null;
     let escaped = false;
-    for (let column = 0; column < current.length; column++) {
+    for (; column < current.length; column++) {
       const char = current[column];
       if (escaped) {
         escaped = false;
@@ -157,6 +219,18 @@ export function extractHashCommentLines(source: string): SourceCommentLine[] {
       if (quote === "double" && char === "\\") {
         escaped = true;
         continue;
+      }
+      // 三引號開啟只在單行 quote 之外判定（quote 內的連續引號是字串內容）。
+      if (triple && quote === null && (char === '"' || char === "'")) {
+        if (current[column + 1] === char && current[column + 2] === char) {
+          const closer = findTripleCloser(current, column + 3, char);
+          if (closer === -1) {
+            tripleDelimiter = char;
+            break; // 行剩餘部分全是字串內容
+          }
+          column = closer + 2;
+          continue;
+        }
       }
       if (char === "'" && quote !== "double") {
         quote = quote === "single" ? null : "single";

@@ -102,13 +102,20 @@ export function makePlansDir(root: string): string {
 
 export interface TaskFixtureOptions {
   taskId: string;
-  state?: string;
+  /** 任填一個非空值 → 這個狀態；`null` → 不放 `state` 欄位。 */
+  state?: string | null;
   title?: string;
   owner?: string;
   priority?: string;
   planId?: string;
   /** 游標指向的任務；不給就用 taskId。 */
   cursor?: string | null;
+  /** 任填一個非空值 → section 錨點參照（值可能是壞的舊前綴）。 */
+  contentRef?: string;
+  /** 任填一個非空值 → file mode 的專用內容檔路徑。 */
+  taskContentPath?: string;
+  /** 任填一個非空值 → file mode。 */
+  taskContentMode?: string;
 }
 
 /** 寫一份最小可用的 tasks.json（單一進行中任務）。 */
@@ -120,12 +127,16 @@ export function writeTasksRegistry(root: string, options: TaskFixtureOptions): v
     projectId,
     projectPath,
     title: options.title ?? "測試任務",
-    state: options.state ?? "IN_PROGRESS",
+    // `state: null` 明確表示「不要有這個欄位」；其他情況沿用預設的進行中。
+    ...(options.state === null ? {} : { state: options.state ?? "IN_PROGRESS" }),
     owner: options.owner ?? "ultra",
     priority: options.priority ?? "P0",
     updatedAt: new Date().toISOString(),
     history: [],
     ...(options.planId ? { planId: options.planId } : {}),
+    ...(options.contentRef ? { contentRef: options.contentRef } : {}),
+    ...(options.taskContentPath ? { taskContentPath: options.taskContentPath } : {}),
+    ...(options.taskContentMode ? { taskContentMode: options.taskContentMode } : {}),
   };
   writeMemoryFile(
     root,

@@ -8,7 +8,9 @@
  *
  * key 配置：
  * - `session/<id>/comment-signal`：狀態本體
- *   `{ modifiedFiles, lastReport, warnings }`
+ *   `{ modifiedFiles, lastReport, fileReports, warnings }`
+ *   - `lastReport`：最近一次 check 的 aggregate（展示用；結案 gate 不讀它）。
+ *   - `fileReports`：每個修改過檔案的最新 per-file 報告（結案 gate 聚合用）。
  * - `session/<child>/comment-signal-parent`：父子對應 `{ parentID }`
  * - `session/tombstones/comment-signal`：已刪除工作階段 ID 清單（string[]）。
  *   刻意放在 `session/<id>/` 前綴之外：setup 層的 session.deleted 清理會
@@ -20,7 +22,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { SessionStateStore, type KeyValueStorage } from "../../state/store.ts";
 import { ContentLockBusyError, withContentWriteLock } from "../../kit/write-lock.ts";
-import type { CommentSignalReport, CommentSignalSeverity } from "./types.ts";
+import type { CommentSignalReport, CommentSignalSeverity, FileReport } from "./types.ts";
+import { migrateLegacyBlockingReports, UNATTRIBUTED_LEGACY_BLOCK_KEY } from "./completion-gate.ts";
 import { assertSafeLockPath } from "./containment.ts";
 
 /**
@@ -36,6 +39,21 @@ export interface CommentSignalWarning {
 }
 
 /**
+ * 最近一次「工作階段重掃」的實際結果。
+ *
+ * 存在的原因：`modifiedFiles` 非空**不代表**有可掃描的檔案——清單裡可能
+ * 只有 Markdown、隱藏檔或已被刪除的檔案，那種重掃會掃到 0 個檔。結案
+ * 訊息要據此告訴操作者「重掃工作階段沒用、請改掃整個專案」，靠的是這份
+ * 實際掃描結果，而不是猜。
+ */
+export interface CommentSignalSweep {
+  /** 該次重掃實際掃到的檔案數。 */
+  scannedFileCount: number;
+  /** ISO-8601 時間字串，便於序列化與觀察。 */
+  at: string;
+}
+
+/**
  * 單一工作階段的 Comment Signal 狀態容器。
  * 內容結構跟舊版一致，只是改由 storage 讀寫、不再回傳共用 reference。
  */
@@ -44,10 +62,24 @@ export interface CommentSignalState {
   sessionID: string;
   /** 該工作階段修改過的檔案路徑（去重、保留首次記錄順序）。 */
   modifiedFiles: string[];
-  /** 最近一次 check 結果；初次為 null。 */
+  /** 最近一次 check 結果；初次為 null（展示用，結案 gate 改讀 fileReports）。 */
   lastReport: CommentSignalReport | null;
+  /**
+   * 每個修改過檔案的最新 per-file 報告（key 為檔案路徑）。
+   * 結案 gate 的聚合對象：任一已修改檔案的最新報告 `shouldBlockCompletion`
+   * 為真即阻斷；該檔修好後的乾淨報告會覆蓋舊阻斷，不會永久誤擋。
+   */
+  fileReports: Record<string, FileReport>;
   /** pre-edit／post-edit warnings 累積清單。 */
   warnings: CommentSignalWarning[];
+  /**
+   * 最近一次工作階段重掃的實際結果（沒掃過則為 null）。
+   *
+   * 選填是因為這個欄位不參與任何掃描判定：`checkChangedFiles` 之類的函式
+   * 只吃「臨時組出來的狀態物件」，那些物件不需要帶掃描紀錄。從 storage
+   * 讀出的狀態一律會正規化成明確的 null。
+   */
+  sweep?: CommentSignalSweep | null;
 }
 
 /** 狀態本體的 storage kind（key 後段）。 */
@@ -72,7 +104,43 @@ const LOCK_RETRY_DELAYS_MS = [0, 50, 100, 200];
 const TOMBSTONE_CAP = 1000;
 
 function freshState(sessionID: string): CommentSignalState {
-  return { sessionID, modifiedFiles: [], lastReport: null, warnings: [] };
+  return { sessionID, modifiedFiles: [], lastReport: null, fileReports: {}, warnings: [], sweep: null };
+}
+
+/** 寬容正規化重掃紀錄：形狀不合回 null（等同沒掃過）。 */
+function normalizeSweep(stored: unknown): CommentSignalSweep | null {
+  if (!stored || typeof stored !== "object") return null;
+  const candidate = stored as Partial<CommentSignalSweep>;
+  if (typeof candidate.scannedFileCount !== "number" || !Number.isFinite(candidate.scannedFileCount)) {
+    return null;
+  }
+  return {
+    scannedFileCount: candidate.scannedFileCount,
+    at: typeof candidate.at === "string" ? candidate.at : "",
+  };
+}
+
+/** 寬容正規化 per-file 報告：形狀不合的 entry 直接丟棄（舊狀態無此欄位時回空）。 */
+function normalizeFileReports(stored: unknown): Record<string, FileReport> {
+  if (!stored || typeof stored !== "object") return {};
+  const out: Record<string, FileReport> = {};
+  for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+    if (typeof key !== "string" || !value || typeof value !== "object") continue;
+    const candidate = value as Partial<FileReport>;
+    if (typeof candidate.filePath !== "string" || typeof candidate.shouldBlockCompletion !== "boolean") continue;
+    out[key] = {
+      filePath: candidate.filePath,
+      scanned: candidate.scanned ?? true,
+      signals: Array.isArray(candidate.signals) ? candidate.signals : [],
+      violations: Array.isArray(candidate.violations) ? candidate.violations : [],
+      highRisk: Array.isArray(candidate.highRisk) ? candidate.highRisk : [],
+      shouldBlockCompletion: candidate.shouldBlockCompletion,
+      errorCount: typeof candidate.errorCount === "number" ? candidate.errorCount : 0,
+      warningCount: typeof candidate.warningCount === "number" ? candidate.warningCount : 0,
+      highRiskCount: typeof candidate.highRiskCount === "number" ? candidate.highRiskCount : 0,
+    };
+  }
+  return out;
 }
 
 function normalizeState(sessionID: string, stored: unknown): CommentSignalState {
@@ -85,11 +153,19 @@ function normalizeState(sessionID: string, stored: unknown): CommentSignalState 
       ? raw.modifiedFiles.filter((item): item is string => typeof item === "string")
       : [],
     lastReport: (raw.lastReport as CommentSignalReport | null) ?? null,
+    // 舊版狀態的阻斷先遷移成 per-file 記錄，再被真的 per-file 報告蓋掉。
+    // 順序不能顛倒：這裡是「讀舊狀態」的唯一入口，只要缺了遷移，舊版阻斷
+    // 就會被這行補出的空 `fileReports` 蓋掉，之後再也沒有人看得到它。
+    fileReports: {
+      ...migrateLegacyBlockingReports(stored),
+      ...normalizeFileReports(raw.fileReports),
+    },
     warnings: Array.isArray(raw.warnings)
       ? (raw.warnings as CommentSignalWarning[]).filter(
           (item) => item && typeof item.filePath === "string",
         )
       : [],
+    sweep: normalizeSweep(raw.sweep),
   };
 }
 
@@ -226,7 +302,9 @@ export class CommentSignalStore {
     await this.sessions.setSession(state.sessionID, COMMENT_SIGNAL_STATE_KIND, {
       modifiedFiles: state.modifiedFiles,
       lastReport: state.lastReport,
+      fileReports: state.fileReports,
       warnings: state.warnings,
+      sweep: state.sweep,
     });
   }
 
@@ -293,7 +371,7 @@ export class CommentSignalStore {
 
   /**
    * 註冊父子工作階段關係。若 child 在 event 抵達前已修改檔案，
-   * 會立即把既有 modifiedFiles／warnings 回填到所有 ancestor。
+   * 會立即把既有 modifiedFiles／fileReports／warnings 回填到所有 ancestor。
    * parent 已刪除（tombstone）時拒絕，避免 late event 讓已刪狀態復活。
    */
   async registerSessionParent(sessionID: string, parentID: string): Promise<boolean> {
@@ -309,11 +387,20 @@ export class CommentSignalStore {
 
         await this.sessions.setSession(child, COMMENT_SIGNAL_PARENT_KIND, { parentID: parent });
         const childState = await this.readState(child);
-        if (childState.modifiedFiles.length === 0 && childState.warnings.length === 0) return true;
+        if (
+          childState.modifiedFiles.length === 0 &&
+          childState.warnings.length === 0 &&
+          Object.keys(childState.fileReports).length === 0
+        ) {
+          return true;
+        }
 
         for (const ancestorID of await this.getSessionAncestors(child)) {
           const ancestor = await this.readState(ancestorID);
           for (const filePath of childState.modifiedFiles) appendModifiedFile(ancestor, filePath);
+          for (const [filePath, fileReport] of Object.entries(childState.fileReports)) {
+            ancestor.fileReports[filePath] = fileReport;
+          }
           for (const warning of childState.warnings) appendWarning(ancestor, warning);
           await this.writeState(ancestor);
         }
@@ -397,6 +484,92 @@ export class CommentSignalStore {
     });
   }
 
+  /**
+   * 寫入單一檔案的最新 per-file 報告；後續同檔寫入會覆蓋（含乾淨報告覆蓋
+   * 舊阻斷：問題修好後 gate 不再誤擋），並同步聚合到所有 ancestor
+   *（子工作階段的阻斷／清除都會即時反映到父工作階段）。
+   */
+  async recordFileReport(
+    sessionID: string,
+    filePath: string,
+    report: FileReport,
+  ): Promise<CommentSignalState> {
+    return this.withStoreLock(async () =>
+      (await this.withFileLock(sessionID, async () => {
+        // 已刪除的工作階段不再接受記錄（late edit 不得重建狀態、不得污染 parent）。
+        if (await this.isTombstoned(sessionID)) return freshState(sessionID);
+        const state = await this.readState(sessionID);
+        state.fileReports[filePath] = report;
+        await this.writeState(state);
+        for (const ancestorID of await this.getSessionAncestors(sessionID)) {
+          const ancestor = await this.readState(ancestorID);
+          ancestor.fileReports[filePath] = report;
+          await this.writeState(ancestor);
+        }
+        return state;
+      })) ?? freshState(sessionID),
+    );
+  }
+
+  /**
+   * 記下最近一次「工作階段重掃」的實際掃描結果。
+   *
+   * 供結案訊息判斷用：`modifiedFiles` 非空不代表有可掃描檔（可能全是
+   * Markdown、隱藏檔或已刪除檔），只有實際掃描結果能說明「重掃工作階段
+   * 會不會掃到東西」。純記錄，不影響任何阻斷判定。
+   */
+  async recordSessionSweep(sessionID: string, scannedFileCount: number): Promise<void> {
+    return this.withStoreLock(async () => {
+      await this.withFileLock(sessionID, async () => {
+        if (await this.isTombstoned(sessionID)) return;
+        const state = await this.readState(sessionID);
+        state.sweep = { scannedFileCount, at: new Date().toISOString() };
+        await this.writeState(state);
+      });
+    });
+  }
+
+  /**
+   * 解除**本工作階段自己**的「無法歸檔的舊版阻斷」標記。
+   *
+   * 解除權限刻意只給標記的擁有者：掃描範圍是某個工作階段時，它證明的也只
+   * 是那個工作階段的檔案乾淨。連帶清掉 ancestor 的標記等於讓別人的掃描為
+   * 自己的阻斷背書——子工作階段的掃描根本不涵蓋父工作階段的檔案，這是漏放。
+   * 父層的標記只能由父工作階段自己的完整乾淨重掃解除。
+   *
+   * 呼叫條件由 `comment_signal_check` 把關：只有在一次**涵蓋整個工作階段
+   * 修改檔**（或整個專案）的重掃回報乾淨時才呼叫。局部掃描不足以代表真相
+   * 已重新確立，所以不能解除。
+   *
+   * 可歸檔的舊版阻斷不走這裡：它已經是普通 per-file 記錄，該檔被重新檢查
+   * 並寫入乾淨報告時就自然覆蓋掉了。
+   */
+  async dischargeUnattributedLegacyBlock(sessionID: string): Promise<void> {
+    return this.withStoreLock(async () => {
+      await this.withFileLock(sessionID, async () => {
+        const state = await this.readState(sessionID);
+        if (state.fileReports[UNATTRIBUTED_LEGACY_BLOCK_KEY] === undefined) return;
+        delete state.fileReports[UNATTRIBUTED_LEGACY_BLOCK_KEY];
+        await this.writeState(state);
+      });
+    });
+  }
+
+  /** 取得每檔最新 per-file 報告（defensive copy）。 */
+  async getFileReports(sessionID: string): Promise<Record<string, FileReport>> {
+    const stored = (await this.readState(sessionID)).fileReports;
+    const out: Record<string, FileReport> = {};
+    for (const [filePath, report] of Object.entries(stored)) {
+      out[filePath] = {
+        ...report,
+        signals: [...report.signals],
+        violations: [...report.violations],
+        highRisk: [...report.highRisk],
+      };
+    }
+    return out;
+  }
+
   /** 推入一筆 warning（累積模式，不覆蓋；同內容去重）。 */
   async recordWarning(sessionID: string, warning: CommentSignalWarning): Promise<CommentSignalState> {
     return this.withStoreLock(async () =>
@@ -432,7 +605,8 @@ export class CommentSignalStore {
   }
 
   /**
-   * 完整清除指定工作階段的狀態（modifiedFiles／lastReport／warnings／parent 對應），
+   * 完整清除指定工作階段的狀態（modifiedFiles／lastReport／fileReports／
+   * warnings／parent 對應），
    * 並斷開所有 child→本工作階段的 mapping（否則 child 之後 edit 會把已刪狀態重建），
    * 最後記 tombstone：之後的 late parent 事件不得再以本工作階段為 parent 註冊。
    * 對不存在的工作階段不拋錯；之後讀取會拿到全新空狀態。

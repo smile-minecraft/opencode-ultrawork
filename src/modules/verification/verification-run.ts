@@ -103,13 +103,16 @@ function restrictedEnvironment(runner: Runner): Record<string, string> {
 // subprocess.kill() 只終止直接子程序，測試 runner 起的 dev server／watcher／
 // xdist worker 會變孤兒。detached:true 讓子程序成為新 process group leader，
 // 逾時就能用 process.kill(-pid) 打整個 group。僅 macOS（POSIX）。
-function spawnRestricted(runner: Runner, command: string[], cwd: string): ChildProcess {
+// command[0] 必須是呼叫端用 findExecutableOnPath 解析出的絕對路徑，不傳裸名稱，
+// 避免 spawn 時的 PATH 查找跟檢查時看到的不是同一個檔案（TOCTOU）。
+function spawnRestricted(command: string[], cwd: string, runner: Runner): ChildProcess {
   return spawnChildProcess(command[0]!, command.slice(1), {
     cwd,
     env: restrictedEnvironment(runner),
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
     windowsHide: true,
+    shell: false,
   });
 }
 
@@ -122,6 +125,31 @@ function killProcessGroup(pid: number, signal: NodeJS.Signals): void {
     } catch {
       // 程序已結束。
     }
+  }
+}
+
+/** 以 signal 0 探測 process group 是否還有成員；ESRCH 代表整組已死。 */
+function isProcessGroupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+// leader 退出後，給群組一個有上界的等待：SIGTERM 能處理的群組立刻就死；
+// 忽略 SIGTERM 的成員會在升級計時器的 SIGKILL 送達後死亡。上界一到就回傳，
+// 呼叫端不被卡住；還沒死的群組由 unref 的升級計時器補上 SIGKILL。
+const GROUP_EXIT_WAIT_MS = KILL_GRACE_MS + 2_000;
+
+async function waitForProcessGroupExit(pid: number | undefined, maxWaitMs: number): Promise<boolean> {
+  if (pid === undefined) return true;
+  const startedAt = Date.now();
+  for (;;) {
+    if (!isProcessGroupAlive(pid)) return true;
+    if (Date.now() - startedAt >= maxWaitMs) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 
@@ -184,6 +212,86 @@ function validateGradleArgs(args: string[]): string | null {
   return null;
 }
 
+// 套件管理器 runner 的 args 會原樣轉交給具名 script，底層命令未知；只放行
+// 常見的測試篩選／輸出旗標，寫檔（--fix／--write 類由各工具自行命名，無法窮舉）
+// 靠「驗證工具不改狀態＋trackedFiles 證據」兜底。
+const PACKAGE_RUNNER_FILTER_FLAGS = [
+  "-t",
+  "--testNamePattern",
+  "--testPathPattern",
+  "--grep",
+  "--filter",
+  "-k",
+  "-q",
+  "--silent",
+  "-v",
+  "--verbose",
+] as const;
+
+/**
+ * 每個 direct runner 允許的旗標（exact match，`--flag=value` 比對 `=` 之前）。
+ *
+ * 設計原則：
+ * - 位置參數（不以 - 開頭）一律放行：測試檔、測試名稱、套件路徑都走這裡，
+ *   再由 findArgPathOutsideWorktree 擋 worktree 外的既有路徑。
+ * - 旗標只放行「選測試／調輸出」的讀取型旗標；會執行外部程式（go -exec、
+ *   node --import、pytest -p、phpunit --bootstrap）、會寫檔（-coverprofile、
+ *   --coverage、--junitxml、--bootstrap）的一律不在清單內。
+ * - 同一個短旗標在不同 runner 語意不同就分開處理：cargo -p 是選套件（放行），
+ *   pytest -p 是載入外掛（拒絕）。
+ */
+const EXTRA_ARG_FLAG_ALLOWLIST: Record<string, readonly string[]> = {
+  bun: PACKAGE_RUNNER_FILTER_FLAGS,
+  npm: PACKAGE_RUNNER_FILTER_FLAGS,
+  pnpm: PACKAGE_RUNNER_FILTER_FLAGS,
+  yarn: PACKAGE_RUNNER_FILTER_FLAGS,
+  pytest: ["-q", "-v", "-s", "-x", "--maxfail", "-k", "-m", "--tb", "--no-header", "-rf", "--collect-only", "--co"],
+  python: ["-q", "-v", "-s", "-x", "--maxfail", "-k", "-m", "--tb", "--no-header", "-rf", "--collect-only", "--co"],
+  python3: ["-q", "-v", "-s", "-x", "--maxfail", "-k", "-m", "--tb", "--no-header", "-rf", "--collect-only", "--co"],
+  go: ["-run", "-v", "-count", "-timeout", "-race", "-cover", "-failfast", "-short", "-list"],
+  cargo: ["-p", "--package", "--test", "--tests", "--lib", "--bins", "--all-targets", "--no-run", "--no-fail-fast", "--skip", "--exact", "--ignored", "--include-ignored", "--manifest-path", "--offline", "-q", "--quiet", "-v", "--verbose"],
+  swift: ["--filter", "--skip", "-v", "--verbose", "--parallel", "--num-workers"],
+  node: ["--test-name-pattern", "--test-skip-pattern", "--test-concurrency"],
+  deno: ["--filter", "--fail-fast", "--no-run", "-q", "--quiet"],
+  dotnet: ["--filter", "--configuration", "-c", "--verbosity", "-v", "--no-build", "--no-restore", "--nologo"],
+  maven: ["-Dtest", "-DfailIfNoTests", "-Dsurefire.failIfNoSpecifiedTests", "-q", "-o", "--offline"],
+  flutter: ["--plain-name", "--concurrency"],
+  mix: ["--only", "--exclude", "--seed", "--max-failures", "--failed", "--stale"],
+  phpunit: ["--filter", "--testsuite", "--group", "--exclude-group", "--no-coverage"],
+};
+
+const EXTRA_ARG_EXAMPLES: Record<string, string> = {
+  bun: 'args: ["tests/unit/login.test.ts", "-t", "recovery"]',
+  npm: 'args: ["tests/unit/login.test.ts", "-t", "recovery"]',
+  pnpm: 'args: ["tests/unit/login.test.ts", "-t", "recovery"]',
+  yarn: 'args: ["tests/unit/login.test.ts", "-t", "recovery"]',
+  pytest: 'args: ["-q", "tests/unit/test_a.py", "-k", "test_recovery"]',
+  python: 'args: ["-q", "tests/unit/test_a.py", "-k", "test_recovery"]',
+  python3: 'args: ["-q", "tests/unit/test_a.py", "-k", "test_recovery"]',
+  go: 'args: ["-run", "TestRecovery", "./..."]',
+  cargo: 'args: ["-p", "my-crate", "test_recovery"]',
+  swift: 'args: ["--filter", "RecoveryTests"]',
+  node: 'args: ["app.test.js", "--test-name-pattern", "recovery"]',
+  deno: 'args: ["--filter", "recovery", "tests/"]',
+  dotnet: 'args: ["--filter", "Name~Recovery"]',
+  maven: 'args: ["-Dtest=RecoveryTest"]',
+  flutter: 'args: ["--plain-name", "recovery"]',
+  mix: 'args: ["test/recovery_test.exs", "--only", "recovery"]',
+  phpunit: 'args: ["--filter", "RecoveryTest"]',
+};
+
+/** 回傳第一個不允許的旗標，沒有則回 null。gradle 走自己的 validateGradleArgs。 */
+function validateExtraArgs(runner: Runner, args: string[]): string | null {
+  if (runner === "gradle") return null;
+  const allowed = EXTRA_ARG_FLAG_ALLOWLIST[runner] ?? [];
+  for (const arg of args) {
+    if (arg === "--" || arg === "-" || !arg.startsWith("-")) continue;
+    const flag = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
+    if (!allowed.includes(flag)) return arg;
+  }
+  return null;
+}
+
 function executableForRunner(runner: Runner): string {
   if (runner === "maven") return "mvn";
   return runner === "phpunit" ? "phpunit" : runner;
@@ -207,24 +315,24 @@ function buildCommand(
   runner: Runner,
   script: string,
   extraArgs: string[],
-  gradleWrapper?: string,
+  executable: string,
 ): string[] {
   if (PACKAGE_RUNNERS.has(runner)) {
-    if (runner === "bun") return [runner, "run", script, ...extraArgs];
-    return [runner, "run", script, "--", ...extraArgs];
+    if (runner === "bun") return [executable, "run", script, ...extraArgs];
+    return [executable, "run", script, "--", ...extraArgs];
   }
 
-  if (runner === "gradle") return [gradleWrapper!, "test", ...extraArgs];
-  if (runner === "pytest") return ["pytest", ...extraArgs];
-  if (runner === "python" || runner === "python3") return [runner, "-m", "pytest", ...extraArgs];
-  if (runner === "node") return ["node", "--test", ...extraArgs];
-  if (runner === "deno") return ["deno", "test", ...extraArgs];
-  if (runner === "dotnet") return ["dotnet", "test", ...extraArgs];
-  if (runner === "maven") return ["mvn", "test", ...extraArgs];
-  if (runner === "flutter") return ["flutter", "test", ...extraArgs];
-  if (runner === "mix") return ["mix", "test", ...extraArgs];
-  if (runner === "phpunit") return ["phpunit", ...extraArgs];
-  return [runner, "test", ...extraArgs];
+  if (runner === "gradle") return [executable, "test", ...extraArgs];
+  if (runner === "pytest") return [executable, ...extraArgs];
+  if (runner === "python" || runner === "python3") return [executable, "-m", "pytest", ...extraArgs];
+  if (runner === "node") return [executable, "--test", ...extraArgs];
+  if (runner === "deno") return [executable, "test", ...extraArgs];
+  if (runner === "dotnet") return [executable, "test", ...extraArgs];
+  if (runner === "maven") return [executable, "test", ...extraArgs];
+  if (runner === "flutter") return [executable, "test", ...extraArgs];
+  if (runner === "mix") return [executable, "test", ...extraArgs];
+  if (runner === "phpunit") return [executable, ...extraArgs];
+  return [executable, "test", ...extraArgs];
 }
 
 function inspectGradleWrapper(cwd: string):
@@ -576,7 +684,10 @@ const verificationRunInputSchema: z.ZodType<VerificationRunInput> = z.object({
   evidence: z.unknown().optional(),
 });
 
-export function createVerificationRunTool(moduleCtx: Plugin.Context): DefinedTool {
+export function createVerificationRunTool(
+  moduleCtx: Plugin.Context,
+  allowedAgents: readonly string[] = VERIFICATION_RUN_ALLOWED_AGENTS,
+): DefinedTool {
   return defineTool({
     name: "verification_run",
     description:
@@ -591,11 +702,11 @@ export function createVerificationRunTool(moduleCtx: Plugin.Context): DefinedToo
       ].join("\n"),
     inputSchema: verificationRunInputSchema,
     execute: async (input: VerificationRunInput, toolCtx: ToolExecutionContext) => {
-      if (!isVerificationRunAllowedAgent(toolCtx.agent)) {
+      if (!isVerificationRunAllowedAgent(toolCtx.agent, allowedAgents)) {
         return jsonResult({
           ok: false,
           code: "AGENT_NOT_ALLOWED",
-          error: `verification_run 僅限 ${VERIFICATION_RUN_ALLOWED_AGENTS.join("／")} 使用。`,
+          error: `verification_run 僅限 ${allowedAgents.join("／")} 使用。`,
           policy: "restricted-verification-v1",
         });
       }
@@ -705,6 +816,19 @@ export function createVerificationRunTool(moduleCtx: Plugin.Context): DefinedToo
             policy: "restricted-verification-v1",
           });
         }
+      } else {
+        const rejectedFlag = validateExtraArgs(runner, extraArgs);
+        if (rejectedFlag) {
+          const allowed = [...(EXTRA_ARG_FLAG_ALLOWLIST[runner] ?? [])];
+          return jsonResult({
+            ok: false,
+            code: "ARGS_NOT_ALLOWED",
+            error: `不允許的參數：${rejectedFlag}（runner: ${runner}）。這個 runner 只允許這些旗標：${allowed.join("、")}；測試檔或測試名稱請用位置參數（不以 - 開頭），例如 { runner: "${runner}", ${EXTRA_ARG_EXAMPLES[runner] ?? 'args: ["tests/unit"]'} }。會執行外部程式、載入外掛／模組或寫檔的旗標一律拒絕。`,
+            rejectedArg: rejectedFlag,
+            allowedArgs: allowed,
+            policy: "restricted-verification-v1",
+          });
+        }
       }
 
       const worktreeResult = await resolveVerificationWorktree(moduleCtx, toolCtx);
@@ -742,7 +866,7 @@ export function createVerificationRunTool(moduleCtx: Plugin.Context): DefinedToo
         });
       }
 
-      let gradleWrapper: string | undefined;
+      let resolvedExecutable: string;
       if (runner === "gradle") {
         const wrapper = inspectGradleWrapper(cwd);
         if (!wrapper.ok) {
@@ -754,10 +878,8 @@ export function createVerificationRunTool(moduleCtx: Plugin.Context): DefinedToo
             policy: "restricted-verification-v1",
           });
         }
-        gradleWrapper = wrapper.path;
-      }
-
-      if (runner !== "gradle") {
+        resolvedExecutable = wrapper.path;
+      } else {
         const executable = executableForRunner(runner);
         const executablePath = findExecutableOnPath(executable);
         if (!executablePath) {
@@ -771,17 +893,42 @@ export function createVerificationRunTool(moduleCtx: Plugin.Context): DefinedToo
             policy: "restricted-verification-v1",
           });
         }
+        resolvedExecutable = executablePath;
       }
 
-      const command = buildCommand(runner, script, extraArgs, gradleWrapper);
+      const command = buildCommand(runner, script, extraArgs, resolvedExecutable);
 
       const trackedBefore = trackedFiles === undefined ? undefined : captureTrackedFileSnapshots(worktree, trackedFiles);
 
       const timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(50, input.timeoutMs ?? DEFAULT_TIMEOUT_MS));
       const startedAt = Date.now();
+
+      const cancelledResult = (note: string) => {
+        const trackedAfter = trackedFiles === undefined ? undefined : captureTrackedFileSnapshots(worktree, trackedFiles);
+        return jsonResult({
+          ok: false,
+          code: "CANCELLED",
+          error: note,
+          cancelled: true,
+          runner,
+          script,
+          command,
+          cwd,
+          timeoutMs,
+          durationMs: Date.now() - startedAt,
+          evidence: buildVerificationEvidence(trackedFiles, trackedBefore, trackedAfter, { ok: false, outputTruncated: false }),
+          policy: "restricted-verification-v1",
+        });
+      };
+
+      // 呼叫前就已中止：不要啟動子程序。
+      if (toolCtx.signal?.aborted) {
+        return cancelledResult("驗證在啟動前被取消，沒有啟動子程序。");
+      }
+
       let subprocess: ReturnType<typeof spawnRestricted>;
       try {
-        subprocess = spawnRestricted(runner, command, cwd);
+        subprocess = spawnRestricted(command, cwd, runner);
       } catch (error) {
         const trackedAfter = trackedFiles === undefined ? undefined : captureTrackedFileSnapshots(worktree, trackedFiles);
         return jsonResult({
@@ -804,8 +951,12 @@ export function createVerificationRunTool(moduleCtx: Plugin.Context): DefinedToo
 
       const childPid = subprocess.pid;
       let timedOut = false;
+      let cancelled = false;
+      let settled = false;
       let spawnError: Error | undefined;
+      let forceExit: (() => void) | undefined;
       const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        forceExit = () => resolve({ code: null, signal: null });
         subprocess.once("exit", (code, signal) => resolve({ code, signal }));
         subprocess.once("error", (err) => {
           spawnError = err instanceof Error ? err : new Error(String(err));
@@ -813,22 +964,57 @@ export function createVerificationRunTool(moduleCtx: Plugin.Context): DefinedToo
         });
       });
 
-      let killEscalation: ReturnType<typeof setTimeout> | undefined;
+      // 逾時與取消都打整個 process group：先 SIGTERM，寬限期後 SIGKILL，
+      // 再一個寬限期還沒結束就不再等，直接回傳（不留孤兒，也不卡住呼叫端）。
+      // 升級計時器一律 unref：提前回傳也不會被取消，SIGKILL 照樣送達；
+      // 只是不再用它們hold 住事件迴圈。
+      const killTimers: ReturnType<typeof setTimeout>[] = [];
+      const clearKillTimers = () => {
+        for (const killTimer of killTimers.splice(0)) clearTimeout(killTimer);
+      };
+      const trackKillTimer = (killTimer: ReturnType<typeof setTimeout>) => {
+        if (typeof killTimer.unref === "function") killTimer.unref();
+        killTimers.push(killTimer);
+        return killTimer;
+      };
+      const killProcessTree = (pid: number | undefined) => {
+        if (pid === undefined) return;
+        killProcessGroup(pid, "SIGTERM");
+        trackKillTimer(setTimeout(() => {
+          killProcessGroup(pid, "SIGKILL");
+          trackKillTimer(setTimeout(() => forceExit?.(), KILL_GRACE_MS));
+        }, KILL_GRACE_MS));
+      };
       const timer = setTimeout(() => {
         timedOut = true;
-        if (childPid !== undefined) {
-          killProcessGroup(childPid, "SIGTERM");
-          killEscalation = setTimeout(() => killProcessGroup(childPid, "SIGKILL"), KILL_GRACE_MS);
-        }
+        killProcessTree(childPid);
       }, timeoutMs);
 
+      const abortSignal = toolCtx.signal;
+      const handleAbort = () => {
+        if (settled || timedOut) return;
+        cancelled = true;
+        clearTimeout(timer);
+        killProcessTree(childPid);
+      };
+      if (abortSignal) {
+        if (abortSignal.aborted) handleAbort();
+        else abortSignal.addEventListener("abort", handleAbort, { once: true });
+      }
+
       const exit = await exitPromise;
+      settled = true;
       clearTimeout(timer);
-      if (killEscalation) clearTimeout(killEscalation);
+      abortSignal?.removeEventListener("abort", handleAbort);
+      if (timedOut || cancelled) {
+        // leader 退出不代表整組全死：確認群組終止才清升級計時器，否則留著
+        // unref 計時器讓 SIGKILL 照樣送達。等待有上界，呼叫端不會被卡住。
+        if (await waitForProcessGroupExit(childPid, GROUP_EXIT_WAIT_MS)) clearKillTimers();
+      }
       // 程序已結束，pipe 應隨即關閉；防禦性上限避免 stream 卡住時掛死。
       await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 2000))]);
 
-      if (spawnError && !timedOut) {
+      if (spawnError && !timedOut && !cancelled) {
         return jsonResult({
           ok: false,
           code: "SPAWN_FAILED",
@@ -841,6 +1027,43 @@ export function createVerificationRunTool(moduleCtx: Plugin.Context): DefinedToo
 
       const stdout = stdoutCapture.finalize();
       const stderr = stderrCapture.finalize();
+
+      if (cancelled) {
+        const trackedAfter = trackedFiles === undefined ? undefined : captureTrackedFileSnapshots(worktree, trackedFiles);
+        const exitSignal = exit.signal ?? null;
+        const summaryLines = extractSummaryLines(`${stdout.text}\n${stderr.text}`);
+        const evidence = buildVerificationEvidence(
+          trackedFiles,
+          trackedBefore,
+          trackedAfter,
+          { ok: false, outputTruncated: stdout.truncated || stderr.truncated },
+        );
+        return jsonResult({
+          ok: false,
+          code: "CANCELLED",
+          error: "驗證在完成前被取消，已對子程序群組送出 SIGTERM（寬限期後 SIGKILL）；沒有等到逾時。",
+          cancelled: true,
+          runner,
+          script,
+          command,
+          cwd,
+          exitCode: null,
+          exitSignal,
+          timedOut: false,
+          timeoutMs,
+          durationMs: Date.now() - startedAt,
+          stdout: stdout.text,
+          stderr: stderr.text,
+          stdoutBytes: stdout.bytes,
+          stderrBytes: stderr.bytes,
+          outputTruncated: stdout.truncated || stderr.truncated,
+          summaryLines,
+          evidence,
+          environmentPolicy: "已移除常見憑證環境變數；CI=1；NO_COLOR=1",
+          policy: "restricted-verification-v1",
+        }, null, 2);
+      }
+
       const exitCode = timedOut ? null : exit.code;
       const exitSignal = exit.signal ?? null;
       const summaryLines = extractSummaryLines(`${stdout.text}\n${stderr.text}`);

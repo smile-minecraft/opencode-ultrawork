@@ -6,46 +6,16 @@
  * session.location.directory，拿不到才退回
  * ctx.location.project?.directory ?? ctx.location.directory。
  *
- * isUnsafeRoot 沿用舊版黑名單（`/` / `""` / `"."` / `".."` / `/Users` /
- * `/Volumes`，另對 symlink 解析後的真實路徑套用同一份黑名單），禁止
- * 新增／移除項目，避免既有防呆失效。
+ * isUnsafeRoot 只有 kit 一份（`src/kit/path-guard.ts`：`/`／`""`／`"."`／
+ * `".."`／`/Users`／`/Volumes`／家目錄本身，另對 symlink 解析後的真實路徑
+ * 套用同一份黑名單）。家目錄入列是使用者裁定：一致性優先於個別工具的好用度，
+ * 讀取類工具同樣拒絕；這裡只轉匯出，不再自帶黑名單。
  */
 
 import type { Plugin } from "@opencode/plugin";
-import { dirname, resolve } from "node:path";
-import { realpathSync } from "node:fs";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 
-/** 判斷路徑是否屬於 unsafe root 黑名單；無法確認時一律 fail closed。 */
-export function isUnsafeRoot(path: string): boolean {
-  if (!path) return true;
-  const resolved = resolve(path);
-  // 嚴禁在根目錄或系統關鍵目錄建立狀態或啟動驗證工具。
-  if (resolved === "/" || resolved === "" || resolved === "." || resolved === ".." || resolved === "/Users" || resolved === "/Volumes") {
-    return true;
-  }
-  const real = resolveExistingRealpath(resolved);
-  // 無法解析出任何存在祖先 → 無法確認 containment → fail closed。
-  if (!real) return true;
-  return real === "/" || real === "/Users" || real === "/Volumes";
-}
-
-/**
- * 回傳 target 的真實路徑；target 不存在時逐層向上找最近的存在祖先解析。
- * 連檔案系統根都無法解析時回傳 undefined（呼叫端 fail closed）。
- */
-function resolveExistingRealpath(target: string): string | undefined {
-  let current = target;
-  for (;;) {
-    try {
-      return realpathSync(current);
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return undefined;
-      current = parent;
-    }
-  }
-}
+export { isUnsafeRoot } from "../../kit/path-guard.ts";
 
 /** 本次工具呼叫所屬工作階段的位置；失敗時回傳 undefined，由呼叫端退回外掛實例位置。 */
 async function sessionDirectoryOf(ctx: Plugin.Context, toolCtx: ToolExecutionContext): Promise<string | undefined> {

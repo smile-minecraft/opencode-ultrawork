@@ -48,7 +48,7 @@ import {
   taskContentFilePath,
   taskFileContentRef,
   taskSectionContentRef,
-  resolvePlansContentRef,
+  resolveRegisteredContentRef,
   readPlanContent,
 } from "../content/content-ref.ts";
 import { extractTaskSection, findSectionBounds } from "../content/section-parser.ts";
@@ -135,8 +135,12 @@ export function createTaskContentReadTool(runtime: UltraworkRuntimeContext) {
       }
 
       if (effectiveMode === "file" && task.taskContentPath) {
-        // Read from dedicated task file - use resolvePlansContentRef for safety
-        const targetPath = resolvePlansContentRef(task.taskContentPath, root, PLANS_DIR);
+        // Read from dedicated task file - 走同一個路徑守衛；引用是壞的時候要點名這張卡
+        const targetPath = resolveRegisteredContentRef(task.taskContentPath, root, PLANS_DIR, {
+          owner: "task",
+          id: taskId,
+          field: "taskContentPath",
+        });
         const raw = readPlanContent(root, PLANS_DIR, targetPath);
         if (grep !== undefined) {
           const res = grepContent(raw ? canonicalBody(raw) : "", { pattern: grep, regex, context: grepContextLines, maxMatches });
@@ -145,7 +149,7 @@ export function createTaskContentReadTool(runtime: UltraworkRuntimeContext) {
             ok: true, taskId, source: "file", grep, taskContentPath: task.taskContentPath,
             ...(raw ? { fileSha256: fileSha256(raw), contentVersion: frontmatterContentVersion(raw) } : {}),
             matchCount: res.matchCount, truncated: res.truncated, matches: res.matches,
-          }, null, 2);
+          });
         }
         return jsonResult({
           ok: true,
@@ -154,7 +158,7 @@ export function createTaskContentReadTool(runtime: UltraworkRuntimeContext) {
           content: raw,
           taskContentPath: task.taskContentPath,
           ...(raw ? { fileSha256: fileSha256(raw), contentVersion: frontmatterContentVersion(raw) } : {}),
-        }, null, 2);
+        });
       }
 
       // Read from plan section
@@ -166,9 +170,13 @@ export function createTaskContentReadTool(runtime: UltraworkRuntimeContext) {
       const plan = planRegistry.plans[task.planId];
       if (!plan) return jsonResult({ ok: false, code: "PLAN_NOT_FOUND", error: `找不到計畫 ${task.planId}` });
 
-      // Read from plan section - use contentRef resolution
+      // Read from plan section - 引用屬於計畫，所以訊息要點名計畫（真正要修的那筆）
       const planPath = plan.contentRef
-        ? resolvePlansContentRef(plan.contentRef, root, PLANS_DIR)
+        ? resolveRegisteredContentRef(plan.contentRef, root, PLANS_DIR, {
+            owner: "plan",
+            id: task.planId,
+            field: "contentRef",
+          })
         : planContentPath(task.planId, PLANS_DIR);
       const raw = readPlanContent(root, PLANS_DIR, planPath);
 
@@ -200,7 +208,7 @@ export function createTaskContentReadTool(runtime: UltraworkRuntimeContext) {
           contentVersion: frontmatterContentVersion(raw),
           ...(meta ? { sectionSha256: meta.sha256 } : {}),
           matchCount: res.matchCount, truncated: res.truncated, matches: res.matches,
-        }, null, 2);
+        });
       }
 
       return jsonResult({
@@ -215,7 +223,7 @@ export function createTaskContentReadTool(runtime: UltraworkRuntimeContext) {
         contentVersion: frontmatterContentVersion(raw),
         ...(meta ? { sectionSha256: meta.sha256, lineRange: meta.lineRange } : {}),
         ...(migrationHint ? { hint: migrationHint } : {}),
-      }, null, 2);
+      });
     }
   });
 }
@@ -305,7 +313,11 @@ export function createTaskContentUpdateTool(runtime: UltraworkRuntimeContext) {
       if (effectiveSource === "section") {
         if (plan && !plan.contentRef) plan.contentRef = planContentRef(effectivePlanId!);
         contentPath = plan?.contentRef
-          ? resolvePlansContentRef(plan.contentRef, root, PLANS_DIR)
+          ? resolveRegisteredContentRef(plan.contentRef, root, PLANS_DIR, {
+              owner: "plan",
+              id: effectivePlanId!,
+              field: "contentRef",
+            })
           : planContentPath(effectivePlanId!, PLANS_DIR);
         fileExists = !!readPlanContent(root, PLANS_DIR, contentPath);
         if (!fileExists) return jsonResult({ ok: false, code: "PLAN_CONTENT_MISSING", error: `plan ${effectivePlanId} 還沒有 content 檔，先 plan-content-create。` });
@@ -384,7 +396,7 @@ export function createTaskContentUpdateTool(runtime: UltraworkRuntimeContext) {
           hint: !raw
             ? `新檔：mode:"apply" + expectedSha256 傳 null。`
             : `mode:"apply" + expectedSha256:"${expectedShaFor(raw)}"（${effectiveSource === "section" && sectionMeta(raw, { kind: "task", taskId }) === null ? "新 section，比對整個 plan 檔 sha" : "定址比對 section sha"}）。`,
-        }, null, 2);
+        });
       }
 
       // ── apply ──
@@ -539,7 +551,7 @@ export function createTaskContentUpdateTool(runtime: UltraworkRuntimeContext) {
             ...(effectiveSource === "file"
               ? { taskContentPath: t.taskContentPath }
               : { sectionSha256: sectionMeta(written, { kind: "task", taskId })?.sha256 }),
-          }, null, 2);
+          });
         });
       } catch (err) {
         if (err instanceof ContentLockBusyError) {

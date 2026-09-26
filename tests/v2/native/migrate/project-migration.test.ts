@@ -32,18 +32,14 @@ function seedLegacy(root: string): void {
 }
 
 describe("專案層搬移：全新專案（沒有舊資料）", () => {
-  test("建立 .ultrawork/.gitignore，內容是忽略全部只留設定檔", () => {
+  test("建立 .ultrawork/.gitignore，內容只有 `*` 一行（全部忽略，含自己）", () => {
     const root = tempRoot();
     const result = run(root);
     expect(result.ok).toBe(true);
     const gitignore = join(root, ".ultrawork", ".gitignore");
     expect(existsSync(gitignore)).toBe(true);
     expect(readFileSync(gitignore, "utf-8")).toBe(ULTRAWORK_GITIGNORE_CONTENT);
-    expect(readFileSync(gitignore, "utf-8").split("\n").filter(Boolean)).toEqual([
-      "*",
-      "!.gitignore",
-      "!ultrawork.jsonc",
-    ]);
+    expect(readFileSync(gitignore, "utf-8").split("\n").filter(Boolean)).toEqual(["*"]);
     expect(result.gitignore).toEqual({ path: gitignore, created: true });
   });
 
@@ -56,7 +52,9 @@ describe("專案層搬移：全新專案（沒有舊資料）", () => {
     expect(payload.skipped).toEqual([]);
     expect(payload.migratedAt).toBe(FIXED_NOW.toISOString());
     // 舊位置本來就沒有，屬於靜默跳過，不算警告。
-    expect(payload.version).toBe(1);
+    expect(payload.version).toBe(2);
+    // 分層記錄：這次是專案層寫的。
+    expect(Object.keys(payload.layers)).toEqual(["project"]);
   });
 });
 

@@ -21,6 +21,7 @@
 
   "skiller": {
     // 個人技能目錄。預設 ~/.agents/skills
+    // 注意：這兩個 key 只採全域層的值，寫在專案層會被忽略並警告。
     "personalSkillRoot": "~/.agents/skills",
     // 晉升／退役時改寫的角色檔目錄。auto = <OpenCode 全域設定資料夾>/agents
     "agentsDir": "auto"
@@ -31,11 +32,23 @@
     "catalog": "index"
   },
 
+  "verification": {
+    // 能呼叫 verification_run 的 agent。預設只有 momus
+    "runAllowedAgents": ["momus"],
+    // 能呼叫 change-scope-check 的 agent。預設 build 與 ultra
+    "scopeCheckAllowedAgents": ["build", "ultra"]
+  },
+
   "workflow": {
     "completion": {
       // memory 模組開啟時，任務完成前要先有有效的同步紀錄。
       // memory 關掉時這個值不作用，完成前檢查會自行放行。
       "requireMemoryReceipt": true
+    },
+    "evidencePack": {
+      // 派發時強制檢查實作說明七節格式的 subagent 名單。
+      // 空陣列代表不再檢查；改完要重新載入才生效。
+      "gatedSubagents": ["implementer", "debugger", "ultra-coder"]
     }
   }
 }

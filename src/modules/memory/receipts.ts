@@ -25,7 +25,7 @@ import { jsonResult } from "../../kit/json.ts";
 import { atomicWriteFile } from "../../kit/atomic-write.ts";
 import { RECEIPT_RETENTION_LIMIT, RECEIPT_ID_PREFIX } from "./constants.ts";
 import { deriveProjectId } from "./helpers.ts";
-import { ensureDir, getMemoryPaths, assertSafeMemoryPath } from "./paths.ts";
+import { ensureDir, getMemoryPaths, assertSafeReceiptPath, unsafeProjectRootDetail } from "./paths.ts";
 import type { MemoryReceipt } from "./receipt-validator.ts";
 import type { MemoryRootResolver } from "./session-root.ts";
 
@@ -49,6 +49,26 @@ function normalizeReceiptId(input: string): string {
 }
 
 /**
+ * 收據 ID 白名單：只允許純檔名（英數字開頭，後接英數字／`.`／`_`／`-`）。
+ * `/`、`\`、開頭的 `.`／`-`、空字串一律拒絕，讓 `join(receiptsDir, id + ".json")`
+ * 永遠是 receipts/ 內的單一檔案，不靠後續 containment 才擋穿越。
+ * 長度上限 200：檔名再長各家檔案系統都可能 ENAMETOOLONG，與其拋例外，
+ * 不如回結構化錯誤。
+ */
+const RECEIPT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const RECEIPT_ID_MAX_LENGTH = 200;
+
+function validateReceiptId(receiptId: string): { ok: true } | { ok: false; error: string } {
+  if (!receiptId || receiptId.length > RECEIPT_ID_MAX_LENGTH || !RECEIPT_ID_PATTERN.test(receiptId)) {
+    return {
+      ok: false,
+      error: `收據 ID 非法，僅允許英數字開頭、後接英數字／.／_／-（最長 ${RECEIPT_ID_MAX_LENGTH} 字元）：${receiptId}`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Receipt auto trim：
  * 當 receipts/ 數量超過 RECEIPT_RETENTION_LIMIT 時，依 mtime 升冪排序並
  * 直接刪除最舊的多餘收據（不歸檔：50 筆對驗證與審計已足夠，
@@ -61,7 +81,7 @@ function pruneReceiptsByMtime(projectRoot: string, receiptsDir: string): { remov
     .map((name) => {
       const fullPath = join(receiptsDir, name);
       try {
-        assertSafeMemoryPath(projectRoot, fullPath);
+        assertSafeReceiptPath(projectRoot, fullPath);
         return { name, id: basename(name, ".json"), path: fullPath, mtimeMs: statSync(fullPath).mtimeMs };
       } catch {
         return { name, id: basename(name, ".json"), path: fullPath, mtimeMs: 0 };
@@ -74,7 +94,7 @@ function pruneReceiptsByMtime(projectRoot: string, receiptsDir: string): { remov
   const removed: string[] = [];
   for (const e of toRemove) {
     try {
-      assertSafeMemoryPath(projectRoot, e.path);
+      assertSafeReceiptPath(projectRoot, e.path);
       unlinkSync(e.path);
       removed.push(e.id);
     } catch {
@@ -140,11 +160,15 @@ export function createReceiptTools(resolveRoot: MemoryRootResolver): ReceiptTool
       // 專案綁定：優先使用呼叫端傳入的 projectId / projectPath；
       // 缺時 fallback 到目前專案，讓大多數情境無需重複傳遞綁定資訊。
       const root = await resolveRoot(toolCtx);
+      const unsafeRoot = unsafeProjectRootDetail(root);
+      if (unsafeRoot !== null) {
+        return jsonResult({ ok: false, code: "UNSAFE_ROOT", error: unsafeRoot });
+      }
       const finalProjectId = (projectId ?? deriveProjectId(root)).trim();
       const finalProjectPath = projectPath ?? root;
 
       const { receiptsDir: RECEIPTS_DIR } = getMemoryPaths(root);
-      assertSafeMemoryPath(root, RECEIPTS_DIR);
+      assertSafeReceiptPath(root, RECEIPTS_DIR);
       const finalStatus = (status ?? "ok").trim() || "ok";
       const finalCreatedAt = createdAt?.trim() || nowIso();
       const finalZeroExtractionReason = zeroExtractionReason?.trim();
@@ -166,6 +190,10 @@ export function createReceiptTools(resolveRoot: MemoryRootResolver): ReceiptTool
       }
 
       const receiptId = `${RECEIPT_ID_PREFIX}${taskId}`;
+      const idCheck = validateReceiptId(receiptId);
+      if (!idCheck.ok) {
+        return jsonResult({ ok: false, code: "INVALID_RECEIPT_ID", error: idCheck.error });
+      }
       const receipt: MemoryReceipt = {
         memoryReceiptId: receiptId,
         taskId,
@@ -188,7 +216,7 @@ export function createReceiptTools(resolveRoot: MemoryRootResolver): ReceiptTool
       ensureDir(RECEIPTS_DIR);
 
       const receiptPath = join(RECEIPTS_DIR, `${receiptId}.json`);
-      assertSafeMemoryPath(root, receiptPath);
+      assertSafeReceiptPath(root, receiptPath);
       atomicWriteFile(receiptPath, JSON.stringify(receipt, null, 2));
 
       // Receipt auto trim：寫入後立即檢查，若超過上限直接刪除最舊。
@@ -209,7 +237,7 @@ export function createReceiptTools(resolveRoot: MemoryRootResolver): ReceiptTool
           removedCount: trimResult.removed.length,
           remaining: trimResult.remaining,
         },
-      }, null, 2);
+      });
     },
   });
 
@@ -225,14 +253,22 @@ export function createReceiptTools(resolveRoot: MemoryRootResolver): ReceiptTool
         return jsonResult({ ok: false, error: "receiptId 或 taskId 至少需要一個" });
       }
       const id = normalizeReceiptId(input);
+      const idCheck = validateReceiptId(id);
+      if (!idCheck.ok) {
+        return jsonResult({ ok: false, code: "INVALID_RECEIPT_ID", error: idCheck.error });
+      }
 
       const root = await resolveRoot(toolCtx);
+      const unsafeRoot = unsafeProjectRootDetail(root);
+      if (unsafeRoot !== null) {
+        return jsonResult({ ok: false, code: "UNSAFE_ROOT", error: unsafeRoot });
+      }
       const { receiptsDir: RECEIPTS_DIR } = getMemoryPaths(root);
       const receiptPath = join(RECEIPTS_DIR, `${id}.json`);
-      assertSafeMemoryPath(root, receiptPath);
+      assertSafeReceiptPath(root, receiptPath);
 
       if (!existsSync(receiptPath)) {
-        return jsonResult({ ok: true, receiptId: id, receipt: null }, null, 2);
+        return jsonResult({ ok: true, receiptId: id, receipt: null });
       }
 
       let parsed: unknown;
@@ -244,10 +280,10 @@ export function createReceiptTools(resolveRoot: MemoryRootResolver): ReceiptTool
           ok: false,
           error: `專案記憶更新紀錄不是有效的 JSON：${id}（${message}）`,
           receiptId: id,
-        }, null, 2);
+        });
       }
 
-      return jsonResult({ ok: true, receiptId: id, receiptPath, receipt: parsed }, null, 2);
+      return jsonResult({ ok: true, receiptId: id, receiptPath, receipt: parsed });
     },
   });
 
@@ -259,11 +295,15 @@ export function createReceiptTools(resolveRoot: MemoryRootResolver): ReceiptTool
     inputSchema: ReceiptListInput,
     execute: async (_args, toolCtx) => {
       const root = await resolveRoot(toolCtx);
+      const unsafeRoot = unsafeProjectRootDetail(root);
+      if (unsafeRoot !== null) {
+        return jsonResult({ ok: false, code: "UNSAFE_ROOT", error: unsafeRoot });
+      }
       const { receiptsDir: RECEIPTS_DIR } = getMemoryPaths(root);
-      assertSafeMemoryPath(root, RECEIPTS_DIR);
+      assertSafeReceiptPath(root, RECEIPTS_DIR);
 
       if (!existsSync(RECEIPTS_DIR)) {
-        return jsonResult({ ok: true, receiptsDir: RECEIPTS_DIR, count: 0, receiptIds: [] }, null, 2);
+        return jsonResult({ ok: true, receiptsDir: RECEIPTS_DIR, count: 0, receiptIds: [] });
       }
 
       const entries = readdirSync(RECEIPTS_DIR)
@@ -271,7 +311,7 @@ export function createReceiptTools(resolveRoot: MemoryRootResolver): ReceiptTool
         .map((name) => {
           const id = basename(name, ".json");
           const fullPath = join(RECEIPTS_DIR, name);
-          assertSafeMemoryPath(root, fullPath);
+          assertSafeReceiptPath(root, fullPath);
           try {
             const stat = statSync(fullPath);
             return { receiptId: id, path: fullPath, mtimeMs: stat.mtimeMs, size: stat.size };

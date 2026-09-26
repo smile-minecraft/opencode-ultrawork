@@ -26,7 +26,7 @@ import { ContentLockBusyError, withContentWriteLock } from "../../kit/write-lock
 import { normalizeNewline, splitFrontmatter } from "./helpers.ts";
 import { lineFenceState } from "./markdown-fence.ts";
 import { PROJECT_MD_HARD_LIMIT, PROJECT_MEMORY_LOCK } from "./constants.ts";
-import { getMemoryPaths, assertSafeMemoryPath } from "./paths.ts";
+import { getMemoryPaths, assertSafeMemoryPath, unsafeProjectRootDetail } from "./paths.ts";
 import {
   resolveProjectMdPolicyFromContent,
   getProjectMdCurrentSections,
@@ -405,6 +405,10 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
     execute: async ({ mode, section }, toolCtx) => {
       const effectiveMode: ProjectMemoryReadMode = mode ?? "digest";
       const root = await resolveRoot(toolCtx);
+      const unsafeRoot = unsafeProjectRootDetail(root);
+      if (unsafeRoot !== null) {
+        return jsonResult({ ok: false, code: "UNSAFE_ROOT", error: unsafeRoot });
+      }
       const { projectMd: PROJECT_MD } = getMemoryPaths(root);
       assertSafeMemoryPath(root, PROJECT_MD);
       const requestedSection = section ?? "";
@@ -414,7 +418,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           ok: false,
           code: "INVALID_SECTION_NAME",
           error: "section 必須是一行值，不可包含 carriage return 或 newline。",
-        }, null, 2);
+        });
       }
 
       const raw = readProjectMemoryFile(PROJECT_MD);
@@ -423,7 +427,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           ok: false,
           code: "PROJECT_MD_NOT_FOUND",
           error: `找不到 project.md（${PROJECT_MD}）。先用 workflow_bootstrap 的 mode='minimal' 跑一次，觸發 lazyEnsure。`,
-        }, null, 2);
+        });
       }
 
       const totalSize = raw.length;
@@ -439,7 +443,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           content: raw,
           fileSha256,
           currentSha256: fileSha256,
-        }, null, 2);
+        });
       }
 
       if (effectiveMode === "section") {
@@ -450,7 +454,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             code: "SECTION_REQUIRED",
             error: "mode='section' requires non-empty 'section' arg.",
             availableSections: parsed.sections.map((s) => s.name),
-          }, null, 2);
+          });
         }
         const match = parsed.sections.find((s) => s.name === target);
         if (!match) {
@@ -459,7 +463,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             code: "SECTION_NOT_FOUND",
             error: `project.md 裡找不到「${target}」這個段落。`,
             availableSections: parsed.sections.map((s) => s.name),
-          }, null, 2);
+          });
         }
         return jsonResult({
           ok: true,
@@ -471,7 +475,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           content: match.content,
           fileSha256,
           currentSha256: fileSha256,
-        }, null, 2);
+        });
       }
 
       // digest mode
@@ -496,7 +500,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
         fileSha256,
         currentSha256: fileSha256,
         hint: "Use mode='section' with one of availableSections to fetch a specific section body; use mode='full' for entire content.",
-      }, null, 2);
+      });
     },
   });
 
@@ -517,14 +521,14 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           ok: false,
           code: "INVALID_SECTION_NAME",
           error: "section 必須是一行值，不可包含 carriage return 或 newline。",
-        }, null, 2);
+        });
       }
       if (!sectionName) {
         return jsonResult({
           ok: false,
           code: "SECTION_REQUIRED",
           error: "需要 section 參數，而且必須是一個非空的 H2 標題名稱。",
-        }, null, 2);
+        });
       }
       // 相容 maxChars：必須是正整數且不能超過 hard limit；實際 write limit = min(policy effective, maxChars)
       if (maxChars !== undefined) {
@@ -533,7 +537,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             ok: false,
             code: "INVALID_MAX_CHARS",
             error: "maxChars must be a positive integer.",
-          }, null, 2);
+          });
         }
         if (maxChars > PROJECT_MD_HARD_LIMIT) {
           return jsonResult({
@@ -542,7 +546,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             error: `maxChars cannot exceed the project.md hard limit (${PROJECT_MD_HARD_LIMIT}).`,
             maxChars,
             hardLimit: PROJECT_MD_HARD_LIMIT,
-          }, null, 2);
+          });
         }
       }
       if (effectiveOp !== "delete" && content === undefined) {
@@ -550,10 +554,14 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           ok: false,
           code: "CONTENT_REQUIRED",
           error: "op 為 replace/append 時需要 content。",
-        }, null, 2);
+        });
       }
 
       const root = await resolveRoot(toolCtx);
+      const unsafeRoot = unsafeProjectRootDetail(root);
+      if (unsafeRoot !== null) {
+        return jsonResult({ ok: false, code: "UNSAFE_ROOT", error: unsafeRoot });
+      }
       const { projectMd: PROJECT_MD, memoryDir: MEMORY_DIR } = getMemoryPaths(root);
       assertSafeMemoryPath(root, PROJECT_MD);
       const lockPath = join(MEMORY_DIR, PROJECT_MEMORY_LOCK);
@@ -592,7 +600,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             ok: false,
             code: "PROJECT_MD_NOT_FOUND",
             error: `project.md not found at ${PROJECT_MD}. Run workflow_bootstrap with mode='minimal' first.`,
-          }, null, 2);
+          });
         }
         const currentSha256 = sha256(raw);
         if (splitFrontmatter(raw).frontmatter === null) {
@@ -601,7 +609,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             code: "PROJECT_MD_FRONTMATTER_REQUIRED",
             error: "project.md 沒有有效的 frontmatter 區塊，無法在保留固定格式的前提下更新。",
             currentSha256,
-          }, null, 2);
+          });
         }
         const policy = resolveProjectMdPolicyFromContent(raw);
         if (!policy.isValid) {
@@ -613,7 +621,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             hardLimit: policy.hardLimit,
             effectiveLimit: policy.effectiveLimit,
             rawLimit: policy.rawLimit,
-          }, null, 2);
+          });
         }
         const effectiveLimit = maxChars !== undefined ? Math.min(policy.effectiveLimit, maxChars) : policy.effectiveLimit;
         const renderedOrErr = buildRendered(raw);
@@ -624,7 +632,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             error: renderedOrErr.error,
             availableSections: parseProjectSections(raw).sections.map((s) => s.name),
             currentSha256,
-          }, null, 2);
+          });
         }
         const rendered = renderedOrErr;
         const proposedSha256 = sha256(rendered);
@@ -651,7 +659,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             currentSha256,
             proposedSha256,
             ...preview,
-          }, null, 2);
+          });
         }
         return jsonResult({
           ok: true,
@@ -669,7 +677,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           effectiveLimit,
           hardLimit: policy.hardLimit,
           hint: `帶 expectedSha256:"${currentSha256}" 與 mode:"apply" 寫入。`,
-        }, null, 2);
+        });
       }
 
       // ── apply ──
@@ -680,7 +688,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             ok: false,
             code: "PROJECT_MD_NOT_FOUND",
             error: `project.md not found at ${PROJECT_MD}. Run workflow_bootstrap with mode='minimal' first.`,
-          }, null, 2);
+          });
         }
         const currentSha256 = sha256(raw);
         if (splitFrontmatter(raw).frontmatter === null) {
@@ -689,14 +697,14 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             code: "PROJECT_MD_FRONTMATTER_REQUIRED",
             error: "project.md 沒有有效的 frontmatter 區塊，無法在保留固定格式的前提下更新。",
             currentSha256,
-          }, null, 2);
+          });
         }
         return jsonResult({
           ok: false,
           code: "EXPECTED_SHA256_REQUIRED",
           error: "mode='apply' requires expectedSha256 from a fresh preview/read to prevent lost updates.",
           currentSha256,
-        }, null, 2);
+        });
       }
 
       try {
@@ -708,7 +716,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               ok: false,
               code: "PROJECT_MD_NOT_FOUND",
               error: `project.md not found at ${PROJECT_MD}. Run workflow_bootstrap with mode='minimal' first.`,
-            }, null, 2);
+            });
           }
           const currentSha256 = sha256(raw);
           if (splitFrontmatter(raw).frontmatter === null) {
@@ -717,7 +725,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               code: "PROJECT_MD_FRONTMATTER_REQUIRED",
               error: "project.md 沒有有效的 frontmatter 區塊，無法在保留固定格式的前提下更新。",
               currentSha256,
-            }, null, 2);
+            });
           }
           if (expectedSha256 !== currentSha256) {
             return jsonResult({
@@ -726,7 +734,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               error: "project.md changed since preview. Fetch the current hash and review the proposed update again.",
               expectedSha256,
               currentSha256,
-            }, null, 2);
+            });
           }
 
           const renderedOrErr = buildRendered(raw);
@@ -737,7 +745,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               error: renderedOrErr.error,
               availableSections: parseProjectSections(raw).sections.map((s) => s.name),
               currentSha256,
-            }, null, 2);
+            });
           }
           const rendered = renderedOrErr;
           const proposedSha256 = sha256(rendered);
@@ -752,7 +760,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               hardLimit: lockPolicy.hardLimit,
               effectiveLimit: lockPolicy.effectiveLimit,
               rawLimit: lockPolicy.rawLimit,
-            }, null, 2);
+            });
           }
           const effectiveLimit = maxChars !== undefined ? Math.min(lockPolicy.effectiveLimit, maxChars) : lockPolicy.effectiveLimit;
           if (rendered.length > effectiveLimit) {
@@ -775,7 +783,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               op: effectiveOp,
               currentSha256,
               proposedSha256,
-            }, null, 2);
+            });
           }
 
           const changed = rendered !== raw;
@@ -787,7 +795,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
                 ok: false,
                 code: "PROJECT_MD_NOT_FOUND",
                 error: `project.md not found at ${PROJECT_MD}. Run workflow_bootstrap with mode='minimal' first.`,
-              }, null, 2);
+              });
             }
             const latestSha = sha256(latestRaw);
             if (latestSha !== currentSha256) {
@@ -798,7 +806,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
                 expectedSha256,
                 currentSha256: latestSha,
                 proposedSha256,
-              }, null, 2);
+              });
             }
             projectMemoryFileOps.write(PROJECT_MD, rendered);
           }
@@ -821,11 +829,11 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             hint: changed
               ? "project-memory-update applied atomically under lock."
               : "No write needed; rendered content is unchanged.",
-          }, null, 2);
+          });
         });
       } catch (err) {
         if (err instanceof ContentLockBusyError) {
-          return jsonResult({ ok: false, code: err.code, error: err.message, heldByPid: err.heldByPid, ageSeconds: err.ageSeconds }, null, 2);
+          return jsonResult({ ok: false, code: err.code, error: err.message, heldByPid: err.heldByPid, ageSeconds: err.ageSeconds });
         }
         throw err;
       }
@@ -841,6 +849,10 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
     execute: async ({ body, mode, expectedSha256 }, toolCtx) => {
       const effectiveMode: ProjectMemoryRewriteMode = mode ?? "preview";
       const root = await resolveRoot(toolCtx);
+      const unsafeRoot = unsafeProjectRootDetail(root);
+      if (unsafeRoot !== null) {
+        return jsonResult({ ok: false, code: "UNSAFE_ROOT", error: unsafeRoot });
+      }
       const { projectMd: PROJECT_MD, memoryDir: MEMORY_DIR } = getMemoryPaths(root);
       assertSafeMemoryPath(root, PROJECT_MD);
       const lockPath = join(MEMORY_DIR, PROJECT_MEMORY_LOCK);
@@ -851,7 +863,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           ok: false,
           code: "PROJECT_MD_NOT_FOUND",
           error: `project.md not found at ${PROJECT_MD}. Run workflow_bootstrap with mode='minimal' first.`,
-        }, null, 2);
+        });
       }
 
       const currentDocument = splitFrontmatter(raw);
@@ -860,7 +872,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           ok: false,
           code: "PROJECT_MD_FRONTMATTER_REQUIRED",
           error: "project.md 沒有有效的 frontmatter 區塊，無法在保留固定格式的前提下重寫。",
-        }, null, 2);
+        });
       }
 
       const proposedBody = normalizeNewline(body ?? "").replace(/^\s+/, "");
@@ -869,7 +881,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           ok: false,
           code: "PROJECT_MD_BODY_INVALID",
           error: "body 必須是純內文的 Markdown，而且要有一個非空的 H1 標題；body 裡不接受 frontmatter。",
-        }, null, 2);
+        });
       }
 
       const duplicates = duplicateH2Headings(proposedBody);
@@ -879,7 +891,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           code: "DUPLICATE_H2_HEADINGS",
           error: "要寫入的 project.md body 裡有重複的 H2 標題。",
           duplicateHeadings: duplicates,
-        }, null, 2);
+        });
       }
 
       const currentSha256 = sha256(raw);
@@ -893,7 +905,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           hardLimit: policy.hardLimit,
           effectiveLimit: policy.effectiveLimit,
           rawLimit: policy.rawLimit,
-        }, null, 2);
+        });
       }
       const effectiveLimit = policy.effectiveLimit;
       const rendered = renderProjectRewrite(raw, proposedBody);
@@ -918,7 +930,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           hint,
           currentSha256,
           proposedSha256,
-        }, null, 2);
+        });
       }
 
       const changed = rendered !== raw;
@@ -942,7 +954,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           proposedSha256,
           proposedContent: changed && rendered.length <= effectiveLimit ? rendered : undefined,
           hint: "Preview only; pass currentSha256 as expectedSha256 with mode='apply' after reviewing the proposed body.",
-        }, null, 2);
+        });
       }
 
       // apply path — requires lock & fresh SHA
@@ -953,7 +965,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           error: "mode='apply' requires expectedSha256 from a fresh preview/read to prevent lost updates.",
           currentSha256,
           proposedSha256,
-        }, null, 2);
+        });
       }
       if (expectedSha256 !== currentSha256) {
         return jsonResult({
@@ -963,7 +975,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
           expectedSha256,
           currentSha256,
           proposedSha256,
-        }, null, 2);
+        });
       }
 
       try {
@@ -977,7 +989,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               error: "project.md disappeared while holding the project-memory write lock. No write was performed.",
               currentSha256,
               proposedSha256,
-            }, null, 2);
+            });
           }
           const latestSha256 = sha256(latestRaw);
           if (latestSha256 !== currentSha256) {
@@ -988,7 +1000,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               expectedSha256,
               currentSha256: latestSha256,
               proposedSha256,
-            }, null, 2);
+            });
           }
           // re-validate frontmatter inside lock (avoid TOCTOU on missing frontmatter)
           const latestDoc = splitFrontmatter(latestRaw);
@@ -997,7 +1009,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               ok: false,
               code: "PROJECT_MD_FRONTMATTER_REQUIRED",
               error: "project.md 沒有有效的 frontmatter 區塊，無法在保留固定格式的前提下重寫。",
-            }, null, 2);
+            });
           }
           const latestPolicy = resolveProjectMdPolicyFromContent(latestRaw);
           if (!latestPolicy.isValid) {
@@ -1009,7 +1021,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               hardLimit: latestPolicy.hardLimit,
               effectiveLimit: latestPolicy.effectiveLimit,
               rawLimit: latestPolicy.rawLimit,
-            }, null, 2);
+            });
           }
           const latestEffectiveLimit = latestPolicy.effectiveLimit;
           const latestRendered = renderProjectRewrite(latestRaw, proposedBody);
@@ -1035,7 +1047,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
               hint,
               currentSha256: latestSha256,
               proposedSha256: latestProposedSha256,
-            }, null, 2);
+            });
           }
           const latestChanged = latestRendered !== latestRaw;
           let applied = false;
@@ -1048,7 +1060,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
                 error: "project.md disappeared immediately before the atomic write. No write was performed.",
                 currentSha256: latestSha256,
                 proposedSha256: latestProposedSha256,
-              }, null, 2);
+              });
             }
             const guardedSha256 = sha256(guardedRaw);
             if (guardedSha256 !== latestSha256) {
@@ -1058,7 +1070,7 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
                 error: "project.md changed immediately before the atomic write. No write was performed.",
                 currentSha256: guardedSha256,
                 proposedSha256: latestProposedSha256,
-              }, null, 2);
+              });
             }
             projectMemoryFileOps.write(PROJECT_MD, latestRendered);
             applied = true;
@@ -1079,11 +1091,11 @@ export function createProjectMemoryTools(resolveRoot: MemoryRootResolver): Proje
             hint: applied
               ? "The complete body was atomically replaced; existing frontmatter was preserved."
               : "No write was needed because the rendered project.md is unchanged.",
-          }, null, 2);
+          });
         });
       } catch (err) {
         if (err instanceof ContentLockBusyError) {
-          return jsonResult({ ok: false, code: err.code, error: err.message, heldByPid: err.heldByPid, ageSeconds: err.ageSeconds }, null, 2);
+          return jsonResult({ ok: false, code: err.code, error: err.message, heldByPid: err.heldByPid, ageSeconds: err.ageSeconds });
         }
         throw err;
       }

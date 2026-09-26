@@ -1,5 +1,7 @@
 import type { Plugin } from "@opencode/plugin";
 import type { UltraworkSettings } from "../../../settings/defaults.ts";
+import { isModuleEnabled } from "../../registry.ts";
+import { aggregateCommentSignalGate, describeGateBlock } from "../../comment-signal/completion-gate.ts";
 import { validateReceiptForCompletion } from "../../memory/index.ts";
 import type { KeyValueStorage } from "../../../state/store.ts";
 import type { ProjectBinding, Task, TasksRegistry } from "../core/types.ts";
@@ -28,7 +30,10 @@ export function createWorkflowRuntime(
   runtime = createRuntimeContext({ input, options, registryIO, createEmptyTasksRegistry, normalizeTasksRegistry });
   const storage = ctx.storage as KeyValueStorage;
   configureSessionBindingStore(storage);
-  const memoryRequired = settings.modules.memory && settings.workflow.completion.requireMemoryReceipt;
+  // 開關一律走 registry 的單一判斷（只有 boolean false 算關）：
+  // 直接用 truthy 的話，0／"" 這類非預期值會跟 registry 結論相反。
+  const memoryRequired =
+    isModuleEnabled(settings, "memory") && settings.workflow.completion.requireMemoryReceipt;
 
   runtime.memoryReceiptRequired = memoryRequired;
   runtime.validateMemoryReceiptForTask = (receiptId, task, project, context) => {
@@ -50,22 +55,22 @@ export function createWorkflowRuntime(
   };
 
   runtime.validateCommentSignalForCompletion = async (sessionID) => {
-    if (!settings.modules.commentSignal) return { ok: true, status: "disabled" };
+    if (!isModuleEnabled(settings, "commentSignal")) return { ok: true, status: "disabled" };
     const id = sessionID?.trim();
     if (!id) return { ok: true, status: "not-reported" };
-    const value = await storage.get(`session/${id}/comment-signal`) as { lastReport?: { shouldBlockCompletion?: unknown } } | undefined;
-    const report = value?.lastReport;
-    if (!report || typeof report.shouldBlockCompletion !== "boolean") {
-      return { ok: true, status: "not-reported" };
-    }
-    if (report.shouldBlockCompletion) {
+    // 聚合判定交給 Comment Signal 模組的單一純函式（comment-signal／
+    // state.ts 也走同一支），這裡不複製規則：規則只存在一份，就不會
+    // 出現「工具擋了但 gate 放行」或反過來的落差。
+    const stored = await storage.get(`session/${id}/comment-signal`);
+    const gate = aggregateCommentSignalGate(stored);
+    if (gate.status === "blocked") {
       return {
         ok: false,
         code: "COMMENT_SIGNAL_BLOCKED",
-        error: "Comment Signal 發現尚未排除的註解必要檢查問題，不能完成任務。",
+        error: describeGateBlock(gate),
       };
     }
-    return { ok: true, status: "passed" };
+    return { ok: true, status: gate.status };
   };
 
   return runtime;

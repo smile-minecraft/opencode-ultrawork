@@ -94,7 +94,7 @@ export function createPlanStatusTool(runtime: UltraworkRuntimeContext) {
           missingIds: stats.missingIds,
           orphans: projection === "full" ? orphans : projectTasks(orphans),
           inconsistencies,
-        }, null, 2);
+        });
       }
 
       // Full status: all active plans
@@ -114,7 +114,7 @@ export function createPlanStatusTool(runtime: UltraworkRuntimeContext) {
           inconsistencies: collectPlanInconsistencies(plan, taskRegistry, currentProject),
         };
       });
-      return jsonResult({ ok: true, plans: reports, activePlanIds: planRegistry.activePlanIds, planCursor: planRegistry.planCursor }, null, 2);
+      return jsonResult({ ok: true, plans: reports, activePlanIds: planRegistry.activePlanIds, planCursor: planRegistry.planCursor });
     }
   });
 }

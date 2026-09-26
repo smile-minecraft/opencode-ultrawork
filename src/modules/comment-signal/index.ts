@@ -11,6 +11,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Plugin } from "@opencode/plugin";
+import { isUnsafeRoot } from "../../kit/path-guard.ts";
 import { resolveDirectoryCandidates, resolveSessionDirectory } from "./session-root.ts";
 import { CommentSignalStore, STATE_LOCK_FILENAME } from "./state.ts";
 import { assertSafeLockPath, resolveCanonicalInsideWorktree } from "./containment.ts";
@@ -19,6 +20,7 @@ import { createCommentSignalBaselineTool, createCommentSignalOnlyNewTool, create
 import { inspectDirectoryListing, isScannableExplicitPath, listDirectoryFiles, toPolicyRelativePath } from "./file-scan.ts";
 import {
   FILE_MODIFYING_TOOLS,
+  describeToolInputFields,
   extractFilePathsFromArgs,
   isMarkdownPath,
   makeGuardAfterEdit,
@@ -26,6 +28,7 @@ import {
 } from "./hook-adapter.ts";
 import { createCommentSignalCheckTool } from "./tool-check.ts";
 import type { CommentSignalToolDeps } from "./tool-deps.ts";
+import { currentDayString } from "./tool-deps.ts";
 import { createCommentSignalExplainTool } from "./tool-explain.ts";
 import { createCommentSignalPolicyTool } from "./tool-policy.ts";
 import { createCommentSignalTouchedReportTool } from "./tool-touched-report.ts";
@@ -52,8 +55,21 @@ function buildDeps(ctx: Plugin.Context, store: CommentSignalStore): CommentSigna
     sourceResolver,
     directoryResolver,
     directoryInspector,
+    // 真實 today：EXPIRED_COMMENT／OVERDUE_COMMENT 以今天判定；
+    // 未注入時各工具退回 1970-01-01（純函式測試隔離用）。
+    today: currentDayString(),
     store,
-    resolveRoot: (toolCtx) => resolveSessionDirectory(ctx, toolCtx),
+    resolveRoot: async (toolCtx) => {
+      // unsafe root（系統根、關鍵目錄、家目錄本身）讀寫一視同仁拒絕：
+      // 家目錄入列是使用者裁定，一致性優先於個別工具的好用度。
+      const root = await resolveSessionDirectory(ctx, toolCtx);
+      if (isUnsafeRoot(root)) {
+        throw new Error(
+          `Comment Signal path guard: refusing unsafe root: ${root}（系統根目錄、系統關鍵目錄與家目錄本身不能當專案根目錄）`,
+        );
+      }
+      return root;
+    },
   };
 }
 
@@ -106,6 +122,8 @@ export const commentSignalModule: ModuleDefinition = {
           return null;
         }
         for (const base of candidates) {
+          // unsafe root 不當鎖目錄基底：不在家目錄或系統根下建鎖。
+          if (isUnsafeRoot(base)) continue;
           try {
             const lockDir = join(base, ".ultrawork", "cache", "locks");
             const lockPath = join(lockDir, STATE_LOCK_FILENAME);
@@ -126,12 +144,17 @@ export const commentSignalModule: ModuleDefinition = {
       recordWarning: (sessionID, warning) => store.recordWarning(sessionID, warning).then(() => undefined),
       recordLastReport: (sessionID, report) =>
         store.recordLastReport(sessionID, report as never).then(() => undefined),
+      // before 階段不寫 per-file 報告（尚未修改）：接上真實寫入保持同一形狀。
+      recordFileReport: (sessionID, filePath, report) =>
+        store.recordFileReport(sessionID, filePath, report).then(() => undefined),
     });
     const guardAfterEdit = makeGuardAfterEdit({
       sourceResolver: deps.sourceResolver,
       recordWarning: (sessionID, warning) => store.recordWarning(sessionID, warning).then(() => undefined),
       recordLastReport: (sessionID, report) =>
         store.recordLastReport(sessionID, report as never).then(() => undefined),
+      recordFileReport: (sessionID, filePath, report) =>
+        store.recordFileReport(sessionID, filePath, report).then(() => undefined),
     });
 
     // 工具定義在 transform 外先建好；回呼只做 editor.add。
@@ -158,12 +181,17 @@ export const commentSignalModule: ModuleDefinition = {
       if (typeof toolName !== "string" || !FILE_MODIFYING_TOOLS.includes(toolName)) return;
       const sessionID = (event as { sessionID?: unknown }).sessionID;
       if (typeof sessionID !== "string" || !sessionID) return;
-      const filePaths = extractFilePathsFromArgs((event as { input?: unknown }).input);
+      const toolInput = (event as { input?: unknown }).input;
+      const filePaths = extractFilePathsFromArgs(toolInput);
       if (filePaths.length === 0) {
-        // 抽不到目標路徑＝異常 args（edit／write 缺 path、patch 缺／壞 patchText）：
-        // 靜默放行等於跳過修改前檢查，改 fail closed 直接阻斷。
+        // 抽不到目標路徑＝異常 args（edit／write 缺路徑欄位、patch 缺／壞
+        // patchText）：靜默放行等於跳過修改前檢查，改 fail closed 直接阻斷。
+        // 阻斷是必要的，但訊息必須可診斷——只說「缺少 path」時，下一次遇到
+        // 新的 input 形狀還是猜不出來，所以把實際收到的欄位名與型態帶進去
+        // （describeToolInputFields 只輸出鍵名與型態，不輸出值）。
         throw new Error(
-          `Comment Signal guard: ${toolName} 未提供可解析的檔案路徑（input 缺少 path／patchText），已阻斷執行以避免跳過修改前檢查。`,
+          `Comment Signal guard: ${toolName} 未提供可解析的檔案路徑，已阻斷執行以避免跳過修改前檢查。`
+          + `收到的 input 欄位：${describeToolInputFields(toolInput)}。`,
         );
       }
       const worktree = await resolveSessionDirectory(ctx, { sessionID });

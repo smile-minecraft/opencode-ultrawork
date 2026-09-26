@@ -8,6 +8,10 @@
  * 根因：三個判定 helper 只看字面路徑，canonical 別名一現形就放行。
  * 要求：政策判定一律以 canonical 路徑為準（單一入口），
  * alias→正常內部檔／夾的既有可掃行為保留。
+ *
+ * 政策補充（dot 目錄與 dot 檔分開）：`.hidden` 之類的一般 dot 目錄不再整段
+ * 跳過，所以 alias→`.hidden` 改為「照常掃描」。本檔的排除與敏感斷言
+ * （`.env`／`.git` alias、敏感單檔 alias）維持不變——那才是安全邊界。
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -68,20 +72,31 @@ describe("20 - symlink 別名政策繞過", () => {
     expect(rel.startsWith("..")).toBe(false);
   });
 
-  test("list 經 alias→.hidden：不列出（回 null，fail-closed）", async () => {
-    expect(listDirectoryFiles(ws.root, "alias-hidden")).toBeNull();
+  test("list 經 alias→排除／敏感目錄：回 null（fail-closed）", async () => {
+    // 政策（dot 目錄與 dot 檔分開）：`.hidden` 不在 SCAN_EXCLUDED_DIRS、
+    // 也不是敏感路徑，所以它跟 `.github` 同類——別名進得去、內容照掃。
+    // 真正必須擋的是排除目錄與敏感目錄，下面這兩個仍然回 null。
+    expect(listDirectoryFiles(ws.root, "alias-hidden")).toEqual(["alias-hidden/child.ts"]);
     expect(listDirectoryFiles(ws.root, "alias-env")).toBeNull();
     expect(listDirectoryFiles(ws.root, "alias-git")).toBeNull();
   });
 
-  test("check 掃 alias 資料夾：不讀檔（fail-closed，不洩漏）", async () => {
-    for (const alias of ["alias-hidden/", "alias-env/", "alias-git/"]) {
+  test("check 掃 alias→排除／敏感資料夾：不讀檔（fail-closed，不洩漏）", async () => {
+    for (const alias of ["alias-env/", "alias-git/"]) {
       const out = await run(fx.tools["comment_signal_check"], { path: alias, changedOnly: false });
       expect(out.ok).toBe(true);
       expect(out.scannedFileCount).toBe(0);
       expect(out.shouldBlockCompletion).toBe(true);
       expect(out.violations).toEqual([]);
     }
+  });
+
+  test("check 掃 alias→一般 dot 目錄：照常掃描並擋下違規", async () => {
+    // 對照組：`.hidden` 已不是排除類別，別名不得成為繞過掃描的側門。
+    const out = await run(fx.tools["comment_signal_check"], { path: "alias-hidden/", changedOnly: false });
+    expect(out.ok).toBe(true);
+    expect(out.scannedFileCount).toBe(1);
+    expect(out.shouldBlockCompletion).toBe(true);
   });
 
   test("check 顯式單檔 alias（真身敏感）：不讀不掃", async () => {

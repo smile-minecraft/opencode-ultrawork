@@ -13,6 +13,7 @@
 
 import type { Plugin } from "@opencode/plugin";
 import type { UltraworkSettings } from "../../settings/defaults.ts";
+import { isModuleEnabled } from "../registry.ts";
 import { createWorkflowRuntime, type FullUltraworkRuntimeContext } from "../workflow/index.ts";
 import { TOOL_MODULES } from "./inventory.ts";
 
@@ -30,10 +31,9 @@ export interface DiagnosticsDeps {
   readonly listRegisteredToolNames: () => Promise<readonly string[] | null>;
 }
 
-/** 依模組開關判斷模組是否啟用；未知 key 預設開啟（與 registry.ts 同規則）。 */
+/** 依模組開關判斷模組是否啟用；轉交 registry 的單一判斷，語意詳見該處。 */
 export function moduleEnabled(settings: UltraworkSettings, key: string): boolean {
-  const modules = settings.modules as unknown as Record<string, unknown>;
-  return modules?.[key] !== false;
+  return isModuleEnabled(settings, key);
 }
 
 /**

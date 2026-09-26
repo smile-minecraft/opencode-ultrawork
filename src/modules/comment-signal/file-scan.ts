@@ -4,6 +4,8 @@
  * 角色：
  *   - 提供 `listDirectoryFiles(worktree, dirPath)`：遞迴列舉資料夾內符合
  *     SCAN_EXTENSIONS 的檔案，回傳相對於 worktree 的 POSIX 路徑清單。
+ *   - 提供 `isDirectoryTargetPath(worktree, path)`：explicit path 該走資料夾
+ *     列舉或單檔讀取的單一判斷點（check／baseline／only_new 共用）。
  *   - 從原本 `src/tools/registry.ts` inline 抽出的純函式（無 closure 依賴）。
  *   - 同時提供 `SCAN_EXTENSIONS` / `SCAN_EXCLUDED_DIRS` 兩個常數供測試與
  *     registry 共享單一事實來源。
@@ -13,7 +15,9 @@
  *   - 排除 `node_modules` / `dist` / `.git` / `coverage` / `.next` / `build` /
  *     `.turbo` / `.cache` / `.opencode` / `.obsidian` 等雜訊目錄，另排除
  *     Swift / Xcode 產物（`.build` / `DerivedData` / `.swiftpm`）。
- *   - 排除 dotfile（隱藏檔），除 `.env.example` 之外。
+ *   - dot 目錄與 dot 檔分開處理：一般的 dot 目錄（如 `.github`）放行，
+ *     其下的可掃描檔照常列舉；dot 檔（basename 以 `.` 開頭的隱藏檔）排除，
+ *     `.env.example` 除外。
  *   - Markdown（`.md` / `.markdown`）刻意排除：Comment Signal 系統完全不掃
  *     MD 檔案。
  *   - 結果排序便於測試斷言穩定。
@@ -31,13 +35,24 @@
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { isSensitivePath } from "../../kit/path-guard.ts";
 import { isCanonicalInsideWorktree, resolveCanonicalRoot, resolveCanonicalTarget } from "./containment.ts";
+
+/** 敏感檔名判定只有 kit 一份；這裡轉匯出，保持既有 import 路徑可用。 */
+export { isSensitivePath } from "../../kit/path-guard.ts";
 
 // ─── Constants ───────────────────────────────────────────────
 
-/** Comment Signal 系統認可的文字副檔名集合（不含 .md / .markdown）。 */
+/** Comment Signal 系統認可的文字副檔名集合（不含 .md / .markdown）。
+ *
+ * 納入標準：該語言的註解語法有對應的 lexer 分支，能正確抽出註解——
+ *   - 雙斜線行註解＋斜線星號區塊註解：C-family（.go／.rs／.c／.h 及其
+ *     sibling）與 JS 變體（.mjs／.cjs）沿用既有 js-style lexer；
+ *   - `#`：.py／.toml 走 hash lexer（三引號多行字串除外，見 lexer）。
+ * 無對應分支的語言（.rb／.php／.lua／.sql 等）不納入，避免誤判。
+ */
 export const SCAN_EXTENSIONS = new Set([
-  ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts",
+  ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs",
   ".json", ".css", ".html", ".vue", ".svelte",
   ".yaml", ".yml", ".txt", ".sh",
   // JVM source：與 TS/JS 共用 `//` 與 `/* */` 註解語法，parser 可直接沿用
@@ -46,6 +61,10 @@ export const SCAN_EXTENSIONS = new Set([
   // Swift source：`//`（含 `///` doc）與可巢狀 `/* */`，由 Swift lexer
   // 處理字串 / raw string / 插值邊界後沿用既有 tag header 規則。
   ".swift",
+  // `#` 註解語言：hash lexer＋parser `#` tag header。
+  ".py", ".toml",
+  // C-family：`//` 與 `/* */`，既有 js-style lexer 直接沿用。
+  ".go", ".rs", ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp",
 ]);
 
 /** 預設排除的雜訊目錄（避免掃描 build artifacts / VCS / opencode 自身）。 */
@@ -56,44 +75,90 @@ export const SCAN_EXCLUDED_DIRS = new Set([
   // Swift / Xcode 建置產物：SwiftPM `.build`、Xcode `DerivedData`、
   // SwiftPM 快取 `.swiftpm`（皆為機器產生目錄，不含手寫註解）。
   ".build", "DerivedData", ".swiftpm",
+  // Python 生態的機器產生目錄：`.py` 納入掃描後，虛擬環境與 bytecode 快取
+  // 會帶進大量第三方原始碼（純誤報來源，且拖慢掃描）。
+  "__pycache__", ".venv",
 ]);
+
+/**
+ * 判斷 `path` 是否指向 worktree 根目錄本身。
+ *
+ * 用於「整專案重掃」這種完整範圍的判定：只有涵蓋整個 worktree 的掃描才能
+ * 替一個不知道範圍的舊阻斷（升級前遺留下來、歸不出檔案的那筆）重新確立
+ * 真相。局部路徑（`src`、`.github`）不行——那連範圍都沒涵蓋完整。
+ *
+ * 以「解析後的絕對路徑是否等於 worktree 根」判定，而不是比對字面形狀：
+ * 單看形狀會把 `/`（主機根目錄）當成根，那是錯的。比較時走 canonical
+ * 解析，讓 symlinked worktree 與其真身視為同一個根。
+ */
+export function isWorktreeRootPath(worktree: string, path: string): boolean {
+  if (!worktree) return false;
+  const canonicalRoot = resolveCanonicalRoot(worktree);
+  const root = canonicalRoot ?? resolve(worktree);
+  // 直接把原始 path 交給 resolve，不先去掉尾斜線：先去尾斜線會把 "/"
+  // 變成 ""，主機根目錄就被誤判成 worktree 根了。resolve 本身已經把
+  // "."／""／"./"／"a//" 這些寫法正規化好。
+  return resolve(root, path) === root;
+}
+
+/**
+ * 判斷 explicit `path` 該走「資料夾列舉」還是「單檔讀取」。
+ *
+ * 這是三個工具（check／baseline／only_new）共用的單一判斷點。過去各呼叫端
+ * 各自用同一段副檔名啟發式判斷，導致兩類問題：
+ *   - `.github`／`.hidden` 這類名稱本身帶點號，會被誤判成「副檔名齊全的
+ *     檔案」而整棵目錄不掃描（dot 目錄放行的規則形同虛設）。
+ *   - 規則一旦修正就要改三處，容易漏。
+ *
+ * 判斷順序：先看檔案系統（存在且是目錄 → 資料夾；存在且是檔案 → 單檔），
+ * 不存在時才退回字面啟發式（尾斜線，或 basename 沒有副檔名 → 資料夾）。
+ * 以檔案系統為準才能正確處理 dot 目錄：`.github` 這種名稱本身帶點號，只看
+ * 副檔名會被當成檔案，整棵目錄就永遠不會被掃到。
+ *
+ * 退回路徑（目標不存在）刻意往「視為資料夾」傾斜：路徑不存在時，caller 會
+ * 拿到 `directory_unreadable` 而 fail closed，而不是回空報告假裝通過。寧可
+ * 叫使用者把路徑修好，也不要讓沒被掃描過的路徑靜靜地通過。
+ *
+ * 純讀取判定，不做任何掃描；stat 失敗（權限／斷掉的 symlink）一律走啟發式。
+ */
+export function isDirectoryTargetPath(worktree: string, path: string): boolean {
+  const cleaned = path.replace(/\\/g, "/").replace(/\/+$/g, "");
+  if (cleaned === "") return true;
+  const absolute = resolve(worktree, cleaned);
+  try {
+    return statSync(absolute).isDirectory();
+  } catch {
+    // 檔案系統答不了（不存在／不可讀／斷鏈）→ 用字面形狀判斷。
+    if (path.endsWith("/")) return true;
+    const basename = cleaned.split("/").pop() ?? "";
+    const dotIdx = basename.lastIndexOf(".");
+    // 只有「開頭的點」不算副檔名：`.github` 沒有副檔名，`.env.local` 有。
+    return dotIdx <= 0;
+  }
+}
 
 // ─── Explicit path 過濾（與目錄掃描一致）──────────────────────
 
 /**
- * 敏感路徑判斷（檔名層級）。
- * 鏡像 search 模組同名 helper 的規則（自帶本模組內，不跨模組 import）：
- * `.env.example` 豁免；`.env`／`.env.*`、私鑰檔名、`.(pem|key|p12|pfx)` 皆敏感。
- */
-export function isSensitivePath(filePath: string): boolean {
-  const parts = filePath.split("\\").join("/").split("/").filter(Boolean);
-  return parts.some((part) => {
-    const lower = part.toLowerCase();
-    if (lower === ".env.example") return false;
-    if (lower === ".env" || lower.startsWith(".env.")) return true;
-    if (["id_rsa", "id_ed25519", "credentials.json", "service-account.json"].includes(lower)) return true;
-    return /\.(?:pem|key|p12|pfx)$/i.test(lower);
-  });
-}
-
-/**
  * explicit 單檔路徑是否可掃描：跟目錄掃描套用相同三層過濾
- *（dotfile／支援副檔名／敏感路徑；`.env.example` 豁免）。
+ *（dot 檔／支援副檔名／敏感路徑；`.env.example` 豁免）。
  * Markdown 不在此判斷（check 另有 MD 分支先行；explain 沿用既有 MD 行為）。
+ *
+ * dot 目錄與 dot 檔分開處理：中間路徑段只擋 `SCAN_EXCLUDED_DIRS`
+ *（`.git`／`.opencode` 等）與敏感路徑（`.env` 目錄等），一般的 dot 目錄
+ *（如 `.github`）放行；只有最後一段（basename）以 `.` 開頭才視為隱藏檔
+ * 跳過（`.env.example` 豁免跟以前一致）。
  */
 export function isScannableExplicitPath(filePath: string): boolean {
   if (!filePath || typeof filePath !== "string") return false;
   const segments = filePath.split("\\").join("/").split("/").filter(Boolean);
   if (segments.length === 0) return false;
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    if (!seg.startsWith(".")) continue;
-    // 只有「最後一段恰為 .env.example」豁免（跟目錄掃描一致）。
-    if (i === segments.length - 1 && seg === ".env.example") continue;
-    return false;
+  for (const seg of segments.slice(0, -1)) {
+    if (SCAN_EXCLUDED_DIRS.has(seg)) return false;
   }
-  if (isSensitivePath(filePath)) return false;
   const basename = segments[segments.length - 1];
+  if (basename.startsWith(".") && basename !== ".env.example") return false;
+  if (isSensitivePath(filePath)) return false;
   const dotIdx = basename.lastIndexOf(".");
   if (dotIdx < 0) return false;
   return SCAN_EXTENSIONS.has(basename.slice(dotIdx).toLowerCase());
@@ -102,24 +167,30 @@ export function isScannableExplicitPath(filePath: string): boolean {
 // ─── Dir root 政策（與 entry 相同）────────────────────────────
 
 /**
- * 路徑段政策：任一段命中 SCAN_EXCLUDED_DIRS、或為 dotfile（`.env.example`
- * 豁免），即排除。走訪 entry 與 dir root 共用；敏感判定不含在內，
- * 由各呼叫點按需疊加（`isScannableDirRoot` 含之，走訪 entry 不含——
- * 跟既有規則一致，只換判定對象）。
+ * 路徑段政策：任一段命中 SCAN_EXCLUDED_DIRS 即排除（`.git`／`.opencode`
+ * 等保留）。一般的 dot 目錄（如 `.github`）**不**排除，由種類分支再決定：
+ * 目錄往下走，dot  basename 的檔案才跳過（見 `isExcludedWalkFile`）。
+ * 敏感判定不含在內，由各呼叫點按需疊加（`isScannableDirRoot` 含之，
+ * 走訪 entry 不含——跟既有規則一致，只換判定對象）。
  */
 function hasExcludedSegment(relPath: string): boolean {
   const segments = relPath.split("/").filter((s) => s !== "" && s !== ".");
-  for (const seg of segments) {
-    if (SCAN_EXCLUDED_DIRS.has(seg)) return true;
-    if (seg.startsWith(".") && seg !== ".env.example") return true;
-  }
-  return false;
+  return segments.some((seg) => SCAN_EXCLUDED_DIRS.has(seg));
+}
+
+/**
+ * 走訪到的檔案 entry 是否排除：basename 以 `.` 開頭即為隱藏檔，跳過
+ *（`.env.example` 豁免，跟顯式單檔一致）。dot 目錄下的檔案不受影響。
+ */
+function isExcludedWalkFile(basename: string): boolean {
+  return basename.startsWith(".") && basename !== ".env.example";
 }
 
 /**
  * 顯式資料夾根是否可列舉：對根路徑的每一段套用跟走訪 entry 相同的政策
- *（SCAN_EXCLUDED_DIRS／dotfile／敏感路徑；`.env.example` 豁免跟 entry 一致）。
- * 根本身不受檢 = 敏感／隱藏目錄的內容會被整批列出，故根必須先擋。
+ *（SCAN_EXCLUDED_DIRS／敏感路徑；一般的 dot 目錄如 `.github` 放行，
+ * `.env.example` 豁免跟 entry 一致）。
+ * 根本身不受檢 = 敏感／排除目錄的內容會被整批列出，故根必須先擋。
  * 輸入應為政策相對路徑（見 `toPolicyRelativePath`）；純字串判定，不碰 FS。
  */
 export function isScannableDirRoot(dirPath: string): boolean {
@@ -214,10 +285,14 @@ export function listDirectoryFiles(worktree: string, dirPath: string): string[] 
       // canonical containment：symlink 指到 worktree 外的一律跳過。
       if (!isCanonicalInsideWorktree(full, canonicalRoot)) continue;
       if (st.isDirectory()) {
+        // dot 目錄本身不是排除對象（上已過濾 EXCLUDED／敏感）：往下走，
+        // 其下的檔案由下方的檔案分支再判定。
         stack.push(full);
         continue;
       }
       if (!st.isFile()) continue;
+      // dot 檔（隱藏檔）跳過，`.env.example` 豁免跟顯式單檔一致。
+      if (isExcludedWalkFile(name)) continue;
       const dotIdx = name.lastIndexOf(".");
       if (dotIdx < 0) continue;
       const ext = name.slice(dotIdx).toLowerCase();
@@ -309,10 +384,13 @@ export function inspectDirectoryListing(
       // canonical containment：symlink 指到 worktree 外的一律跳過（與列舉一致）。
       if (!isCanonicalInsideWorktree(full, canonicalRoot)) continue;
       if (st.isDirectory()) {
+        // dot 目錄本身不是排除對象：往下走（與列舉一致）。
         stack.push(full);
         continue;
       }
       if (!st.isFile()) continue;
+      // dot 檔（隱藏檔）不計入（與列舉一致；`.env.example` 豁免）。
+      if (isExcludedWalkFile(name)) continue;
       totalEntries++;
       const dotIdx = name.lastIndexOf(".");
       const ext = dotIdx >= 0 ? name.slice(dotIdx).toLowerCase() : "";

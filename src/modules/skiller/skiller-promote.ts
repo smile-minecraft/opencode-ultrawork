@@ -76,7 +76,7 @@ export function createSkillerPromoteTool(deps: SkillerDeps) {
   return defineTool({
     name: "skiller-promote",
     description:
-      "把固定 draft root 的 skill 草稿升級到固定 skill root：預設 preview 不寫入；apply 需 confirm=true。personal apply 另需非空 targetAgentGroups，並對 scripts/high-risk/secret/workflow ID/frontmatter/digest drift fail closed；回傳完整 SHA-256。managed scope 可選 targetAgents，在 apply 成功後同步更新指定 agent 的 permission.skill exact 行。",
+      "把固定 draft root 的 skill 草稿升級到固定 skill root：預設 preview 不寫入；apply 需 confirm=true。personal apply 另需非空 targetAgentGroups，並對 scripts/high-risk/secret/workflow ID/frontmatter/digest drift fail closed；回傳完整 SHA-256。managed scope 可選 targetAgents，在 apply 成功後同步更新指定 agent 的 skill 路由規則（V1 的 permission.skill exact 行或 V2 permissions 陣列的 skill 項目）。",
     inputSchema: z.object({
       scope: z.enum(["project", "personal", "managed"]).optional(),
       name: z.string().optional(),

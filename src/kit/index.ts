@@ -15,10 +15,23 @@ export {
   assertContainedPath,
   assertSafeWorktreePath,
   isInsideWorktree,
+  isSensitivePath,
+  isUnsafeRoot,
   resolveInsideWorktree,
 } from "./path-guard.ts";
 export {
+  CONTENT_LOCK_STALE_SECONDS,
   ContentLockBusyError,
+  contentLockBusyGuidance,
   diagnoseContentWriteLock,
+  diagnoseReclaimTicket,
+  reclaimTicketPathFor,
+  releaseStaleContentWriteLock,
   withContentWriteLock,
+  type ContentWriteLockOptions,
+  type LockPayload,
+  type ReclaimTicketReadOps,
+  type ReclaimTicketStatus,
+  type StaleLockRelease,
+  type WriteLockReclaimHooks,
 } from "./write-lock.ts";

@@ -50,6 +50,8 @@ import {
   planContentPath,
   planContentRef,
   resolvePlansContentRef,
+  resolveRegisteredContentRef,
+  tryResolvePlansContentRef,
   readPlanContent,
   deletePlanContentStrict,
 } from "../content/content-ref.ts";
@@ -64,6 +66,7 @@ import {
   CONTENT_WRITE_LOCK,
   assertSafeContentPath,
   assertSafeContentRoot,
+  assertSafeProjectFile,
   clearInconsistentMarker,
   guardedContentWrite,
   guardedStoreMutation,
@@ -73,6 +76,8 @@ import {
 import {
   ContentLockBusyError,
   diagnoseContentWriteLock,
+  diagnoseReclaimTicket,
+  releaseStaleContentWriteLock,
   withContentWriteLock,
 } from "../../../kit/write-lock.ts";
 import { lineFenceState } from "../core/markdown-fence.ts";
@@ -270,7 +275,7 @@ export function createPlanContentCreateTool(runtime: UltraworkRuntimeContext) {
               contentRef: p.contentRef,
               contentPath: targetPath,
               contentVersion: nextVersion,
-            }, null, 2);
+            });
           });
         } catch (err) {
           if (err instanceof ContentLockBusyError) {
@@ -297,7 +302,7 @@ export function createPlanContentCreateTool(runtime: UltraworkRuntimeContext) {
           currentContentVersion: contentVersionOf(rawExisting),
           nextContentVersion: contentVersion,
           hint: `整檔重置會用 template 取代自訂 frontmatter。帶 expectedSha256:"${currentSha}" 與 mode:"apply" 寫入。`,
-        }, null, 2);
+        });
       }
 
       if (!expectedSha256) {
@@ -363,7 +368,7 @@ export function createPlanContentCreateTool(runtime: UltraworkRuntimeContext) {
             contentPath: targetPath,
             contentVersion: nextVersion,
             fileSha256: fileSha256(written),
-          }, null, 2);
+          });
         });
       } catch (err) {
         if (err instanceof ContentLockBusyError) {
@@ -401,13 +406,31 @@ export function createPlanContentReadTool(runtime: UltraworkRuntimeContext) {
     }),
     async execute({ planId, contentRef, taskId, section, outline, grep, regex, context: grepContextLines, maxMatches, unlockStale, clearInconsistent }, context) {
       const root = runtime.resolveProjectRoot(context);
-      const { PLANS_DIR } = getPathsForRoot(root);
+      const { PLANS_DIR, MEMORY_DIR } = getPathsForRoot(root);
 
       // ── 復原操作（顯式）──
+      // unlockStale:true 診斷 content 鎖並回收孤兒。原本攤平的診斷欄位
+      // （對外契約）維持原樣；registry 診斷與回收紀錄只用新欄位附加。
       if (unlockStale) {
-        assertSafeContentPath(root, PLANS_DIR, join(PLANS_DIR, CONTENT_WRITE_LOCK));
-        const d = diagnoseContentWriteLock(join(PLANS_DIR, CONTENT_WRITE_LOCK));
-        return jsonResult({ ok: true, action: "diagnoseLock", ...d });
+        const contentLockPath = join(PLANS_DIR, CONTENT_WRITE_LOCK);
+        const registryLockPath = join(MEMORY_DIR, "cache", "locks", "registry.lock");
+        assertSafeContentPath(root, PLANS_DIR, contentLockPath);
+        assertSafeProjectFile(root, PLANS_DIR, registryLockPath);
+        const d = { ...diagnoseContentWriteLock(contentLockPath), reclaimTicket: diagnoseReclaimTicket(contentLockPath) };
+        const registry = { path: registryLockPath, ...diagnoseContentWriteLock(registryLockPath), reclaimTicket: diagnoseReclaimTicket(registryLockPath) };
+        const released: Array<Record<string, unknown>> = [];
+        // 單把鎖的顯式復原：只回收孤兒鎖。卡住的回收資格只診斷（見 reclaimTicket）、
+        // 絕不動手——自動與顯式路徑都不刪除資格檔；要清請按 hint 手動處理。
+        const releaseOneLock = (name: string, lockPath: string, present: boolean) => {
+          if (!present) return;
+          const outcome = releaseStaleContentWriteLock(lockPath);
+          if (outcome.released) {
+            released.push({ name, path: lockPath, heldByPid: outcome.heldByPid, ageSeconds: outcome.ageSeconds });
+          }
+        };
+        releaseOneLock("content", contentLockPath, d.present);
+        releaseOneLock("registry", registryLockPath, registry.present);
+        return jsonResult({ ok: true, action: "diagnoseLock", ...d, registry, released });
       }
       if (clearInconsistent) {
         // content write lock 內執行：marker 只由持鎖的 writer 產生，取鎖即可
@@ -463,7 +486,7 @@ export function createPlanContentReadTool(runtime: UltraworkRuntimeContext) {
       };
 
       if (outline) {
-        return jsonResult({ ...base, sections: buildOutline(raw) }, null, 2);
+        return jsonResult({ ...base, sections: buildOutline(raw) });
       }
 
       if (grep !== undefined) {
@@ -494,7 +517,7 @@ export function createPlanContentReadTool(runtime: UltraworkRuntimeContext) {
           matchCount: res.matchCount,
           truncated: res.truncated,
           matches: res.matches,
-        }, null, 2);
+        });
       }
 
       if (taskId) {
@@ -505,7 +528,7 @@ export function createPlanContentReadTool(runtime: UltraworkRuntimeContext) {
           exists: meta !== null,
           sectionContent: extractTaskSection(raw, taskId) ?? "",
           ...(meta ? { sectionSha256: meta.sha256, lineRange: meta.lineRange } : {}),
-        }, null, 2);
+        });
       }
 
       if (section !== undefined) {
@@ -527,10 +550,10 @@ export function createPlanContentReadTool(runtime: UltraworkRuntimeContext) {
           sectionSha256: meta.sha256,
           lineRange: meta.lineRange,
           level: meta.level,
-        }, null, 2);
+        });
       }
 
-      return jsonResult({ ...base, content: raw }, null, 2);
+      return jsonResult({ ...base, content: raw });
     }
   });
 }
@@ -584,7 +607,12 @@ export function createPlanContentUpdateTool(runtime: UltraworkRuntimeContext) {
         if (!plan) return jsonResult({ ok: false, code: "PLAN_NOT_FOUND", error: `找不到計畫 ${planId}` });
         let targetPath: string;
         if (plan.contentRef) {
-          targetPath = resolvePlansContentRef(plan.contentRef, root, PLANS_DIR);
+          // 這是「更新那個計畫自己的正文」，所以該擋；擋下時訊息要點名是誰的引用。
+          targetPath = resolveRegisteredContentRef(plan.contentRef, root, PLANS_DIR, {
+            owner: "plan",
+            id: planId,
+            field: "contentRef",
+          });
         } else if (plan.contentPath) {
           assertSafePlansPath(plan.contentPath, PLANS_DIR);
           targetPath = plan.contentPath;
@@ -653,7 +681,7 @@ export function createPlanContentUpdateTool(runtime: UltraworkRuntimeContext) {
           hint: targetExistsIn(raw)
             ? `帶 expectedSha256:\"${currentSha}\" 與 mode:\"apply\" 寫入（定址比對 section sha）。`
             : `新 section：帶 expectedSha256:\"${currentSha}\" 與 mode:\"apply\" 寫入（比對整個 plan 檔 sha）。`,
-        }, null, 2);
+        });
       }
 
       // ── apply ──
@@ -787,7 +815,7 @@ export function createPlanContentUpdateTool(runtime: UltraworkRuntimeContext) {
             fileSha256: fileSha256(written),
             shaAccepted,
             ...(meta ? { sectionSha256: meta.sha256 } : {}),
-          }, null, 2);
+          });
         });
       } catch (err) {
         if (err instanceof ContentLockBusyError) {
@@ -876,14 +904,20 @@ export function createPlanContentDeleteTool(runtime: UltraworkRuntimeContext) {
       const pre = analyze(planRegistry, taskRegistry);
       if (!pre.plan) return jsonResult({ ok: false, code: "PLAN_NOT_FOUND", error: `找不到計畫 ${planId}` });
       const targetPath = pre.plan.contentRef
-        ? resolvePlansContentRef(pre.plan.contentRef, root, PLANS_DIR)
+        ? resolveRegisteredContentRef(pre.plan.contentRef, root, PLANS_DIR, {
+            owner: "plan",
+            id: planId,
+            field: "contentRef",
+          })
         : pre.plan.contentPath
           ? pre.plan.contentPath
           : planContentPath(planId, PLANS_DIR);
       const sharedPlans = Object.values(planRegistry.plans).filter((candidate) => {
         if (candidate.planId === planId) return false;
+        // 掃描的是**別的**計畫：解析不到就跟這次刪除無關（它不可能指向同一個檔），
+        // 不能讓一筆無關的壞引用擋住這次刪除。
         const candidatePath = candidate.contentRef
-          ? resolvePlansContentRef(candidate.contentRef, root, PLANS_DIR)
+          ? tryResolvePlansContentRef(candidate.contentRef, root, PLANS_DIR)
           : candidate.contentPath;
         return !!candidatePath && samePathIdentity(candidatePath, targetPath);
       });
@@ -894,7 +928,7 @@ export function createPlanContentDeleteTool(runtime: UltraworkRuntimeContext) {
           error: `計畫內容仍被其他存活計畫引用：${sharedPlans.map((candidate) => candidate.planId).join(", ")}`,
           sharedPlanIds: sharedPlans.map((candidate) => candidate.planId),
           preservedPlanContent: true,
-        }, null, 2);
+        });
       }
 
       // 1) force=false + active section dependents → 維持既有行為。
@@ -906,7 +940,7 @@ export function createPlanContentDeleteTool(runtime: UltraworkRuntimeContext) {
           affectedActiveTasks: pre.affectedActiveTasks,
           preservedPlanContent: true,
           hint: "還有進行中的 section-mode 任務依賴這個計畫。帶 force=true 可以保留計畫內容檔（進行中的參照還讀得到），同時照樣清掉已完成任務的檔案。",
-        }, null, 2);
+        });
       }
 
       // 1.5) preview：不動磁碟、不寫 registry，只回報會刪 / 會保留哪些檔。
@@ -923,7 +957,7 @@ export function createPlanContentDeleteTool(runtime: UltraworkRuntimeContext) {
           hint: pre.hasActiveSectionDependents
             ? "plan content 檔會保留（active section-mode task 仍依賴）；帶 mode:\"apply\" 執行清理。"
             : "帶 mode:\"apply\" 真的刪除。",
-        }, null, 2);
+        });
       }
 
       // ── apply：全程在全域 lock 內，marker fail-closed，snapshot/rollback ──
@@ -940,7 +974,7 @@ export function createPlanContentDeleteTool(runtime: UltraworkRuntimeContext) {
           }
           // lock 內重檢：等鎖期間 task 可能被推進成 active section 依賴
           if (hasActiveSectionDependents && !force) {
-            return jsonResult({ ok: false, code: "ACTIVE_TASKS_DEPEND", planId, affectedActiveTasks, preservedPlanContent: true }, null, 2);
+            return jsonResult({ ok: false, code: "ACTIVE_TASKS_DEPEND", planId, affectedActiveTasks, preservedPlanContent: true });
           }
 
           const cleanedTaskFiles: string[] = [];
@@ -948,7 +982,11 @@ export function createPlanContentDeleteTool(runtime: UltraworkRuntimeContext) {
           let planContentDeleted = false;
 
           const planFileForSha = plan.contentRef
-            ? resolvePlansContentRef(plan.contentRef, root, PLANS_DIR)
+            ? resolveRegisteredContentRef(plan.contentRef, root, PLANS_DIR, {
+                owner: "plan",
+                id: planId,
+                field: "contentRef",
+              })
             : planContentPath(planId, PLANS_DIR);
           const planRawBefore = readPlanContent(root, PLANS_DIR, planFileForSha) || "";
 
@@ -969,7 +1007,11 @@ export function createPlanContentDeleteTool(runtime: UltraworkRuntimeContext) {
               if (deleteTaskFiles) {
                 for (const task of Object.values(taskReg.tasks)) {
                   if (task.planId !== planId || !task.taskContentPath || !isFinishedTaskState(task.state)) continue;
-                  const taskPath = resolvePlansContentRef(task.taskContentPath, root, PLANS_DIR);
+                  const taskPath = resolveRegisteredContentRef(task.taskContentPath, root, PLANS_DIR, {
+                    owner: "task",
+                    id: task.taskId,
+                    field: "taskContentPath",
+                  });
                   if (deletePlanContentStrict(root, taskPath, PLANS_DIR)) cleanedTaskFiles.push(task.taskContentPath);
                 }
               }
@@ -977,7 +1019,15 @@ export function createPlanContentDeleteTool(runtime: UltraworkRuntimeContext) {
               // 3) plan content file 命運
               if (!planContentPreserved) {
                 if (plan.contentRef) {
-                  deletePlanContentStrict(root, resolvePlansContentRef(plan.contentRef, root, PLANS_DIR), PLANS_DIR);
+                  deletePlanContentStrict(
+                    root,
+                    resolveRegisteredContentRef(plan.contentRef, root, PLANS_DIR, {
+                      owner: "plan",
+                      id: planId,
+                      field: "contentRef",
+                    }),
+                    PLANS_DIR,
+                  );
                 } else if (plan.contentPath) {
                   assertSafePlansPath(plan.contentPath, PLANS_DIR);
                   deletePlanContentStrict(root, plan.contentPath, PLANS_DIR);
@@ -1057,7 +1107,7 @@ export function createPlanContentDeleteTool(runtime: UltraworkRuntimeContext) {
             affectedActiveTasks,
             cleanedTaskFiles,
             force,
-          }, null, 2);
+          });
         });
       } catch (err) {
         if (err instanceof ContentLockBusyError) {

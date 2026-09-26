@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync, mkdtempSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { changeScopeStoreDirForRoot } from "../../../src/modules/verification/change-scope-check.ts";
@@ -442,6 +442,270 @@ describe("change-scope-check（新模組）", () => {
       expect(fullGit.includeGitFiles).toBe(true);
       expect(fullGit.coverage.scope).toBe("git-plus-requested");
       expect(storedBaseline(ws.root, fullGit.baselineId).files.map((file: { path: string }) => file.path)).toEqual(["root.ts", "src/inside.ts"]);
+    } finally {
+      ws.cleanup();
+    }
+  });
+
+  test("git 呼叫不阻塞事件迴圈：slow git 執行期間 timer 仍能觸發", async () => {
+    const ws = createWorkspace("scope-check-slow-git-");
+    const originalPath = process.env.PATH;
+    try {
+      const binPath = join(ws.root, "slow-bin");
+      mkdirSync(binPath, { recursive: true });
+      writeFileSync(join(binPath, "git"), "#!/bin/sh\nsleep 1.2\nprintf 'fake-git-output'\n", "utf8");
+      chmodSync(join(binPath, "git"), 0o755);
+      const { delimiter } = await import("node:path");
+      process.env.PATH = `${binPath}${delimiter}${process.env.PATH ?? ""}`;
+
+      const { runGitCommand } = await import("../../../src/modules/verification/change-scope-check.ts");
+      const startedAt = Date.now();
+      let timerFiredAt = 0;
+      const timer = (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        timerFiredAt = Date.now();
+      })();
+      const result = await runGitCommand(ws.root, ["--version"], 10_000);
+      await timer;
+
+      expect(result).toEqual({ ok: true, stdout: "fake-git-output", truncated: false });
+      expect(timerFiredAt - startedAt).toBeLessThan(800);
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      ws.cleanup();
+    }
+  });
+
+  test("卡住的 git 呼叫會被 timeout 中斷，不會無限等待", async () => {
+    const ws = createWorkspace("scope-check-hung-git-");
+    const originalPath = process.env.PATH;
+    try {
+      const binPath = join(ws.root, "hung-bin");
+      mkdirSync(binPath, { recursive: true });
+      writeFileSync(join(binPath, "git"), "#!/bin/sh\nsleep 30\n", "utf8");
+      chmodSync(join(binPath, "git"), 0o755);
+      const { delimiter } = await import("node:path");
+      process.env.PATH = `${binPath}${delimiter}${process.env.PATH ?? ""}`;
+
+      const { runGitCommand } = await import("../../../src/modules/verification/change-scope-check.ts");
+      const startedAt = Date.now();
+      const result = await runGitCommand(ws.root, ["rev-parse", "--verify", "HEAD"], 300);
+      const durationMs = Date.now() - startedAt;
+
+      expect(result.ok).toBe(false);
+      expect(durationMs).toBeLessThan(5000);
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      ws.cleanup();
+    }
+  });
+
+  test("找不到 git 時回傳不可用（ENOENT 語意與舊版相同）", async () => {
+    const ws = createWorkspace("scope-check-no-git-");
+    const originalPath = process.env.PATH;
+    try {
+      const emptyBin = join(ws.root, "empty-bin");
+      mkdirSync(emptyBin, { recursive: true });
+      process.env.PATH = emptyBin;
+
+      const { runGitCommand } = await import("../../../src/modules/verification/change-scope-check.ts");
+      const result = await runGitCommand(ws.root, ["rev-parse", "--verify", "HEAD"], 5000);
+
+      expect(result).toEqual({ ok: false, unavailable: true, truncated: false });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      ws.cleanup();
+    }
+  });
+
+  test("git 輸出超過上限時回報失敗，而不是截斷的成功快照", async () => {    const ws = createWorkspace("scope-check-huge-git-");
+    const originalPath = process.env.PATH;
+    try {
+      const binPath = join(ws.root, "huge-bin");
+      mkdirSync(binPath, { recursive: true });
+      // 約 20MB，超過 16MiB 上限；exit 0，逼出「靜默截斷卻回成功」的實作。
+      writeFileSync(
+        join(binPath, "git"),
+        "#!/bin/sh\nawk 'BEGIN{for(i=0;i<400000;i++) print \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}'\n",
+        "utf8",
+      );
+      chmodSync(join(binPath, "git"), 0o755);
+      const { delimiter } = await import("node:path");
+      process.env.PATH = `${binPath}${delimiter}${process.env.PATH ?? ""}`;
+
+      const { runGitCommand } = await import("../../../src/modules/verification/change-scope-check.ts");
+      const direct = await runGitCommand(ws.root, ["ls-files", "-z"], 10_000);
+      expect(direct.ok).toBe(false);
+      if (!direct.ok) expect(direct.truncated).toBe(true);
+
+      // 整條工具鏈也不會把超限結果當成有效快照。
+      const { tool } = await loadTools(ws.root);
+      const created = await executeTool(tool("change-scope-check"), {
+        action: "create",
+        paths: [{ path: "src", kind: "directory" }],
+        includeGitFiles: true,
+      }, "build");
+      expect(created.ok).toBe(true);
+      expect(created.git.available).toBe(false);
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      ws.cleanup();
+    }
+  });
+
+  // ——— 審查退回修正：單一必要清單缺失即整份快照不可用 ———
+
+  /** 用乾淨 PATH 找出真 git，讓假 git 只干擾特定命令、其餘轉交。 */
+  function discoverRealGit(cleanPath: string): string {
+    const found = execFileSync("/bin/sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: cleanPath },
+    }).trim();
+    expect(found).not.toBe("");
+    return found;
+  }
+
+  test("tracked 清單超限但 status 成功時，快照不可用且不漏 tracked 檔案", async () => {
+    const ws = createWorkspace("scope-check-tracked-truncated-");
+    const originalPath = process.env.PATH ?? "";
+    try {
+      initGit(ws.root);
+      mkdirSync(join(ws.root, "src"), { recursive: true });
+      writeFileSync(join(ws.root, "src", "app.ts"), "committed", "utf8");
+      git(ws.root, ["add", "src"]);
+      git(ws.root, ["commit", "-qm", "fixture"]);
+
+      const realGit = discoverRealGit(originalPath);
+      const binPath = join(ws.root, "partial-bin");
+      mkdirSync(binPath, { recursive: true });
+      // 只有 tracked 清單（ls-files 且不帶 --others）吐超限輸出；
+      // status、untracked、rev-parse 都轉交真 git 且成功。
+      writeFileSync(
+        join(binPath, "git"),
+        [
+          "#!/bin/sh",
+          'case "$*" in',
+          '  *"ls-files"*)',
+          '    case "$*" in',
+          '      *"--others"*) exec "$REAL_GIT" "$@" ;;',
+          `      *) awk 'BEGIN{for(i=0;i<400000;i++) print "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}' ;;`,
+          "    esac",
+          "    ;;",
+          '  *) exec "$REAL_GIT" "$@" ;;',
+          "esac",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      chmodSync(join(binPath, "git"), 0o755);
+      const { delimiter } = await import("node:path");
+      process.env.PATH = `${binPath}${delimiter}${originalPath}`;
+      process.env.REAL_GIT = realGit;
+
+      const { tool } = await loadTools(ws.root);
+      // 只靠 includeGitFiles 納入 tracked 檔案：漏掉就證明悄悄遺失。
+      const created = await executeTool(tool("change-scope-check"), {
+        action: "create",
+        includeGitFiles: true,
+      }, "build");
+
+      expect(created.ok).toBe(true);
+      expect(created.git.available).toBe(false);
+      expect(created.coverage.complete).toBe(false);
+      expect(created.coverage.issues.some((issue: { code: string }) => issue.code === "GIT_SCAN_UNAVAILABLE")).toBe(true);
+    } finally {
+      if (originalPath === "") delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      delete process.env.REAL_GIT;
+      ws.cleanup();
+    }
+  });
+
+  test("必要清單缺一即整份不可用：tracked／status／untracked 各一", async () => {
+    const ws = createWorkspace("scope-check-partial-fail-");
+    const originalPath = process.env.PATH ?? "";
+    try {
+      initGit(ws.root);
+      mkdirSync(join(ws.root, "src"), { recursive: true });
+      writeFileSync(join(ws.root, "src", "app.ts"), "committed", "utf8");
+      git(ws.root, ["add", "src"]);
+      git(ws.root, ["commit", "-qm", "fixture"]);
+
+      const realGit = discoverRealGit(originalPath);
+      const binPath = join(ws.root, "fail-one-bin");
+      mkdirSync(binPath, { recursive: true });
+      // FAIL_CMD 決定哪一條必要清單失敗（exit 1），其餘轉交真 git。
+      writeFileSync(
+        join(binPath, "git"),
+        [
+          "#!/bin/sh",
+          'ARGS="$*"',
+          'if [ "$FAIL_CMD" = "tracked" ]; then',
+          '  case "$ARGS" in *"ls-files"*)',
+          '    case "$ARGS" in *"--others"*) ;; *) exit 1;; esac',
+          "  esac",
+          "fi",
+          'if [ "$FAIL_CMD" = "status" ]; then',
+          '  case "$ARGS" in *"status"*) exit 1;; esac',
+          "fi",
+          'if [ "$FAIL_CMD" = "untracked" ]; then',
+          '  case "$ARGS" in *"--others"*) exit 1;; esac',
+          "fi",
+          'exec "$REAL_GIT" "$@"',
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      chmodSync(join(binPath, "git"), 0o755);
+      const { delimiter } = await import("node:path");
+      process.env.PATH = `${binPath}${delimiter}${originalPath}`;
+      process.env.REAL_GIT = realGit;
+
+      const { tool } = await loadTools(ws.root);
+      for (const failCmd of ["tracked", "status", "untracked"] as const) {
+        process.env.FAIL_CMD = failCmd;
+        const created = await executeTool(tool("change-scope-check"), {
+          action: "create",
+          includeGitFiles: true,
+        }, "build");
+        expect(created.ok, failCmd).toBe(true);
+        // 三種都是必要清單：缺一即整份快照不可用，不當成空集合＋可用。
+        expect(created.git.available, failCmd).toBe(false);
+      }
+    } finally {
+      if (originalPath === "") delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      delete process.env.REAL_GIT;
+      delete process.env.FAIL_CMD;
+      ws.cleanup();
+    }
+  });
+});
+
+describe("change-scope-check 授權清單可由設定覆寫", () => {
+  test("scopeCheckAllowedAgents 改成 qa 時，qa 放行、build 被拒", async () => {
+    const ws = createWorkspace("change-scope-override-");
+    try {
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        verification: { ...DEFAULT_SETTINGS.verification, scopeCheckAllowedAgents: ["qa"] },
+      };
+      const fake = createFakeV2Context({ directory: ws.root });
+      await verificationModule.register({ ctx: fake.ctx, settings });
+      const tool = fake.added.get("change-scope-check");
+      if (!tool) throw new Error("tool not registered: change-scope-check");
+      // qa 在新清單內：過了授權門，走到參數檢查才被擋。
+      const allowed = await executeTool(tool, { action: "bogus" }, "qa");
+      expect(allowed.code).toBe("INVALID_INPUT");
+      // build 不在新清單內：授權門直接拒絕，並點名有效清單。
+      const denied = await executeTool(tool, { action: "create", paths: [] }, "build");
+      expect(denied.code).toBe("AGENT_NOT_ALLOWED");
+      expect(denied.error).toContain("qa");
+      expect(denied.error).not.toContain("build");
     } finally {
       ws.cleanup();
     }

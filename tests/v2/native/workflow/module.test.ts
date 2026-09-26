@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_SETTINGS } from "../../../../src/settings/defaults.ts";
 import { registerModules } from "../../../../src/modules/registry.ts";
-import { workflowModule } from "../../../../src/modules/workflow/index.ts";
+import { buildSubagentEvidencePackGuidance, workflowModule } from "../../../../src/modules/workflow/index.ts";
+import { EVIDENCE_PACK_SECTIONS } from "../../../../src/modules/workflow/gates/evidence-pack.ts";
 import { createFakeV2Context } from "../../_fake-v2-context.ts";
 
 const TOOL_NAMES = [
@@ -58,5 +59,27 @@ describe("workflow V2 模組註冊", () => {
     expect(fake.added.size).toBe(0);
     expect(fake.toolHooks.size).toBe(0);
     expect(fake.sessionHooks.size).toBe(0);
+  });
+});
+
+describe("實作說明指引文字", () => {
+  test("未設定時注入 subagent 的指引逐字等於改動前", () => {
+    const headings = EVIDENCE_PACK_SECTIONS.map((name, index) => `- ### ${index + 1}. ${name}`);
+    expect(buildSubagentEvidencePackGuidance()).toBe(
+      [
+        "<!-- uw-task-evidence-pack-guidance -->",
+        "",
+        "## 實作說明七節固定格式（subagent prompt 指引）",
+        "",
+        "派遣給 `implementer`、`debugger` 或 `ultra-coder` 的 subagent prompt，必須含下列七個 H3 標題，依序、每節非空、不可重複：",
+        "",
+        ...headings,
+        "",
+        "- 缺漏、空節、重複、順序錯、名稱或序號錯誤都會被擋下。",
+        "- `### 6. Acceptance Criteria` 必須含至少一個 `- [ ]` 或 `- [x]` checkbox。",
+        "- heading 層級混用時會在派發前自動改成 H3；其他錯誤不會自動猜測。",
+        "- 用 `work-order-build` 組裝時，prompt 只填它回傳的 `work-order:<id>`，派發前會自動換回全文。",
+      ].join("\n"),
+    );
   });
 });

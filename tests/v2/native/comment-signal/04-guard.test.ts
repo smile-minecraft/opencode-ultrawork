@@ -68,6 +68,7 @@ async function changedState(store: CommentSignalStore, sessionID: string): Promi
     sessionID,
     modifiedFiles: await store.getModifiedFiles(sessionID),
     lastReport: null,
+    fileReports: {},
     warnings: [],
   };
 }

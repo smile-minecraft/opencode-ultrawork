@@ -276,7 +276,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
           project: currentProject,
           finishedTaskLimit: FINISHED_TASK_LIMIT,
           projection,
-        }, null, 2);
+        });
       }
       if (!taskId) return jsonResult({ ok: false, code: "TASK_ID_REQUIRED", error: "這個操作需要 taskId" });
       const result = await runtime.transactRegistries(context, async ({ tasks: registry, plans: plansRegistry }, control) => {
@@ -522,10 +522,10 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
         const safeReceiptId = memoryReceiptId?.trim() || "memory-disabled";
         if (runtime.memoryReceiptRequired) {
           const receiptValidation = runtime.validateMemoryReceiptForTask(safeReceiptId, task, currentProject, context);
-          if (!receiptValidation.ok) return jsonResult(receiptValidation, null, 2);
+          if (!receiptValidation.ok) return jsonResult(receiptValidation);
         }
         const commentSignalCheck = await runtime.validateCommentSignalForCompletion(context?.sessionID);
-        if (!commentSignalCheck.ok) return jsonResult(commentSignalCheck, null, 2);
+        if (!commentSignalCheck.ok) return jsonResult(commentSignalCheck);
         if (commentSignalCheck.status === "disabled") {
           warnings.push("Comment Signal 模組未啟用，已略過註解必要檢查。");
         }
@@ -638,7 +638,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
         task.history = task.history.slice(-TASK_HISTORY_LIMIT);
         registry.activeTaskIds = uniq([...registry.activeTaskIds, taskId]);
       } else if (event === "status") {
-        return jsonResult({ ok: true, registry }, null, 2);
+        return jsonResult({ ok: true, registry });
       }
       control.commit();
       const planSnapshot = readPlanSnapshot(runtime, task, currentProject, context);
@@ -652,7 +652,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
         project: currentProject,
         finishedTaskLimit: FINISHED_TASK_LIMIT,
         ...(warnings.length ? { warnings } : {}),
-      }, null, 2);
+      });
       });
       await markSessionTaskBound(context?.sessionID, taskId);
       await runtime.updateStateMd(runtime.readRegistry(context), context);

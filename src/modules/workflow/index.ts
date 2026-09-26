@@ -9,6 +9,7 @@ import {
   EVIDENCE_PACK_SECTIONS,
   formatEvidencePackErrors,
   normalizeHeadingLevels,
+  resolveEvidencePackGatedSubagents,
   validateEvidencePack,
 } from "./gates/evidence-pack.ts";
 import { formatEscalationRejection } from "./gates/escalation.ts";
@@ -40,16 +41,27 @@ export function buildUltraworkStableContext(project: { projectId: string; projec
   ].join("\n");
 }
 
-export function buildSubagentEvidencePackGuidance(): string {
+export function buildSubagentEvidencePackGuidance(
+  gatedSubagents: readonly string[] = EVIDENCE_PACK_GATED_SUBAGENTS,
+): string {
   const headings = EVIDENCE_PACK_SECTIONS.map(
     (name, index) => `- ### ${EVIDENCE_PACK_SECTION_NUMBERS[index]}. ${name}`,
   );
+  const gatedNames = gatedSubagents.map((name) => `\`${name}\``).join("、");
+  // 預設清單的措辭維持改動前的逐字內容（「A、B 或 C」）；只有自訂清單才用列舉。
+  const isDefaultList = gatedSubagents.length === EVIDENCE_PACK_GATED_SUBAGENTS.length
+    && EVIDENCE_PACK_GATED_SUBAGENTS.every((name, index) => gatedSubagents[index] === name);
+  const scopeLine = gatedSubagents.length === 0
+    ? "目前沒有 subagent 需要附實作說明（gatedSubagents 為空）；以下格式僅供需要時參考："
+    : isDefaultList
+      ? "派遣給 `implementer`、`debugger` 或 `ultra-coder` 的 subagent prompt，必須含下列七個 H3 標題，依序、每節非空、不可重複："
+      : `派遣給 ${gatedNames} 的 subagent prompt，必須含下列七個 H3 標題，依序、每節非空、不可重複：`;
   return [
     TOOL_DEFINITION_MARKER,
     "",
     "## 實作說明七節固定格式（subagent prompt 指引）",
     "",
-    "派遣給 `implementer`、`debugger` 或 `ultra-coder` 的 subagent prompt，必須含下列七個 H3 標題，依序、每節非空、不可重複：",
+    scopeLine,
     "",
     ...headings,
     "",
@@ -96,7 +108,9 @@ export const workflowModule: ModuleDefinition = {
       "plan-content-delete": createPlanContentDeleteTool(workflow),
       "work-order-build": createWorkOrderBuildTool(workflow, workOrders),
     };
-    const guidance = buildSubagentEvidencePackGuidance();
+    const guidance = buildSubagentEvidencePackGuidance(
+      resolveEvidencePackGatedSubagents(runtime.settings),
+    );
     const toolRegistration = await runtime.ctx.tool.transform((editor) => {
       for (const tool of Object.values(tools)) {
         editor.add(tool as never);
@@ -123,7 +137,9 @@ export const workflowModule: ModuleDefinition = {
       }
 
       const agent = typeof input.agent === "string" ? input.agent : "";
-      if (!(EVIDENCE_PACK_GATED_SUBAGENTS as readonly string[]).includes(agent)) return;
+      // 受控清單由設定解出（register 時快照，改設定要重載才生效）。
+      const gatedSubagents = resolveEvidencePackGatedSubagents(runtime.settings);
+      if (!(gatedSubagents as readonly string[]).includes(agent)) return;
       let prompt: unknown = input.prompt;
       if (typeof prompt === "string" && prompt.length > 0) {
         const normalized = normalizeHeadingLevels(prompt);
@@ -226,6 +242,15 @@ export { inspectPlanRegistry } from "./registry/plan-completion.ts";
 export type { PlanRegistryHealthIssue, PlanRegistryHealthReport } from "./registry/plan-completion.ts";
 export { readInconsistentMarker } from "./content/content-store.ts";
 export type { InconsistentMarker } from "./content/content-store.ts";
+export {
+  contentRefOwnerLabel,
+  inspectContentRef,
+  resolveRegisteredContentRef,
+  tryResolvePlansContentRef,
+  type ContentRefDefect,
+  type ContentRefInspection,
+  type ContentRefOwner,
+} from "./content/content-ref.ts";
 export { splitFrontmatter, isFinishedPlanState, isFinishedTaskState } from "./core/helpers.ts";
 export { FINISHED_PLAN_LIMIT, FINISHED_TASK_LIMIT } from "./core/constants.ts";
 export type { PlansRegistry, ProjectBinding, TasksRegistry } from "./core/types.ts";

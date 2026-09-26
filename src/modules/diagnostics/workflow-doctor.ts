@@ -20,6 +20,15 @@
  *      位置沒通過安全檢查。搬移未完成不改變 `ok`，
  *      外掛本來就照新位置運作，這裡只負責把沒搬完講清楚 —— 診斷得出是被安全檢查
  *      擋下（`.opencode`／`.ultrawork` 是 symlink）時連原因與排除方式一起講。
+ *   5. 新增 `Content Ref Path Integrity` 檢查與 `content_ref_issues` 欄位：逐項
+ *      驗證註冊檔裡每個 `contentRef`（計畫與任務）與 `taskContentPath`，判定走讀寫
+ *      工具同一個 `inspectContentRef`。嚴重度分兩級，界線與 `collectMissingContentRef`
+ *      的活躍語意一致：
+ *        · `legacy-prefix` / `outside-store` / `not-a-file` —— 引用永遠指向不到正文
+ *          （守衛擋下，或目標是目錄／型態讀不到），不看項目狀態一律 failed。
+ *        · `missing-file` —— 引用格式沒問題、缺的只是正文。**活躍**（非 COMPLETED／
+ *          FAILED／CANCELLED）項目 failed 並讓 `ok=false`；已終態維持 warn，因為正文
+ *          被清掉、引用留著是常見狀態，不該擋人。
  *
  * 唯讀：只讀檔案與 registry；不建立、不清除任何檔案（含不一致標記）。
  */
@@ -34,17 +43,21 @@ import type { MigrationStateReport } from "../../migrate/index.ts";
 import type { InconsistentMarker } from "../workflow/index.ts";
 import { moduleEnabled, type DiagnosticsDeps } from "./deps.ts";
 import {
+  collectContentRefIntegrity,
   collectContentStoreMarker,
   collectMemoryBudget,
   collectMissingContentRef,
   collectPlanRegistryHealth,
   collectStateProjectionDivergence,
+  collectUltraworkGitTracking,
+  checkUltraworkGitignore,
   emptyMemoryBudget,
   emptyPlanRegistryHealth,
   readPlansForDiagnostics,
   readTasksForDiagnostics,
   resolveCurrentTaskId,
   type CheckItem,
+  type ContentRefIssue,
   type MemoryBudget,
   type PlanRegistryHealth,
 } from "./shared.ts";
@@ -86,6 +99,7 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
         memory_budget: MemoryBudget;
         plan_registry_health: PlanRegistryHealth;
         content_store_inconsistent?: InconsistentMarker;
+        content_ref_issues: ContentRefIssue[];
       } = {
         ok: true,
         checks,
@@ -99,6 +113,7 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
         },
         memory_budget: emptyMemoryBudget(),
         plan_registry_health: emptyPlanRegistryHealth(),
+        content_ref_issues: [],
       };
 
       // ── 模組開關：記憶體子系統是否啟用 ──
@@ -157,6 +172,41 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
         if (contentRef.count > 0) {
           diagnosis.memory_budget.missing_content_ref_status = "warn";
           warnings.push(...contentRef.warnings);
+        }
+      }
+
+      // ── 註冊檔裡每一個參照的可用性（與讀寫工具同一套路徑守衛）──
+      // 位置緊接在缺漏檢查之後：兩者講同一個主題（引用），但分開報。缺漏是
+      // 「欄位不存在、沒東西可讀」；這裡是「欄位在、但指向用不了的位置」，會擋住
+      // 讀寫工具。合併成一個檢查會讓「缺參照」看起來像故障，所以另立一項。
+      if (plansReason || tasksReason) {
+        skip("Content Ref Path Integrity", plansReason ?? tasksReason!);
+      } else {
+        const integrity = collectContentRefIntegrity(paths, plansRegistry, registry);
+        diagnosis.content_ref_issues = integrity.issues;
+        for (const issue of integrity.issues) {
+          warnings.push(`[content-ref] ${issue.repair}`);
+        }
+        if (integrity.blocking.length > 0) {
+          check(
+            "Content Ref Path Integrity",
+            false,
+            describeBlockingRefIssues(integrity.blocking),
+          );
+          diagnosisOk = false;
+        } else if (integrity.issues.length > 0) {
+          // 只剩「已終態項目的正文不見」：引用格式沒問題、也不擋任何寫入，
+          // 而且正文被清掉、引用留著是常見狀態，所以是 warn 而不讓 ok 變 false。
+          checks.push({
+            name: "Content Ref Path Integrity",
+            status: "warn",
+            details:
+              `有 ${integrity.issues.length} 個引用指向的正文檔不存在，但持有者都已封存／完成` +
+              `（常見狀態，不擋操作）：${describeRefIssues(integrity.issues)}。` +
+              `要恢復正文用 plan-content-create 重新建立。`,
+          });
+        } else {
+          check("Content Ref Path Integrity", true, "註冊檔裡每個 contentRef / taskContentPath 都指向內容庫內的普通檔");
         }
       }
 
@@ -257,6 +307,12 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
         });
       }
 
+      // ── `.ultrawork/` 版控衛生：.gitignore 必要行、被追蹤的檔案、設定檔豁免 ──
+      // 三種都是 warn（不影響 ok，外掛照常運作）；插件只提示，絕不改使用者的版控。
+      // 全域層不建 `.gitignore`、插件不插手使用者的全域政策，這裡只看專案層。
+      collectUltraworkGitignoreCheck(paths.PROJECT_ROOT, checks, warnings);
+      collectUltraworkGitTrackingCheck(paths.PROJECT_ROOT, checks, warnings);
+
       // workflow 模組關閉時，註冊檔來源的檢查沒有資料來源可診斷。
       if (!workflowEnabled) {
         warnings.push(
@@ -268,6 +324,130 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
       return jsonResult(diagnosis);
     },
   });
+}
+
+/** 引用問題的短標籤（`details` 裡用；完整修法在 `warnings` 與 `content_ref_issues`）。 */
+function describeRefIssue(issue: ContentRefIssue): string {
+  return `${issue.owner === "plan" ? "計畫" : "任務"} ${issue.id} 的 ${issue.field}（${issue.ref}）`;
+}
+
+/** 短標籤清單，超過五筆就截斷並註明總數（doctor 的 details 有長度上限的顧慮）。 */
+function describeRefIssues(issues: readonly ContentRefIssue[]): string {
+  const shown = issues.slice(0, 5).map(describeRefIssue).join("；");
+  return issues.length > 5 ? `${shown}（等 ${issues.length} 筆）` : shown;
+}
+
+/**
+ * failed 的 details：依「為什麼不能用」分成兩組分開講。
+ *
+ * 分組不是排版偏好 —— 三種缺陷的修法完全不同（改前綴 / 改路徑 / 重新建立），
+ * 混成一句會讓使用者不知道要動哪裡；`missing-file` 那組還多一個前提：只有活躍項目
+ * 才會被算成問題，已終態的不在這裡。
+ */
+function describeBlockingRefIssues(blocking: readonly ContentRefIssue[]): string {
+  const outsideStore = blocking.filter(
+    (issue) => issue.kind === "legacy-prefix" || issue.kind === "outside-store",
+  );
+  const notAFile = blocking.filter((issue) => issue.kind === "not-a-file");
+  const activeMissing = blocking.filter((issue) => issue.kind === "missing-file");
+  const parts: string[] = [];
+  if (outsideStore.length > 0) {
+    parts.push(
+      `${outsideStore.length} 個指向內容庫之外的位置，讀寫工具會被它們擋下：${describeRefIssues(outsideStore)}`,
+    );
+  }
+  if (notAFile.length > 0) {
+    parts.push(`${notAFile.length} 個指向的不是普通檔（目錄或讀不到型態），正文讀不到：${describeRefIssues(notAFile)}`);
+  }
+  if (activeMissing.length > 0) {
+    parts.push(
+      `${activeMissing.length} 個進行中／活躍項目的正文檔不存在（引用在庫內、缺的只是正文）：` +
+        `${describeRefIssues(activeMissing)}`,
+    );
+  }
+  return `註冊檔有 ${blocking.length} 個引用用不了 —— ${parts.join("；")}。` +
+    `逐項清單與修法在 content_ref_issues / warnings。`;
+}
+
+/**
+ * `.ultrawork/.gitignore` 檢查：(a) 缺必要行 `*`、(c) 設定檔仍被豁免。
+ *
+ * 模板只有 `*` 一行；既有檔案永遠不自動改寫，想跟新模板一致就手動刪行。
+ * 任一情況都是 warn（不影響診斷 ok），兩種可同時成立。
+ */
+function collectUltraworkGitignoreCheck(
+  projectRoot: string,
+  checks: CheckItem[],
+  warnings: string[],
+): void {
+  const health = checkUltraworkGitignore(projectRoot);
+  const problems: string[] = [];
+  if (!health.hasRequiredLine) {
+    const missing = health.content === undefined
+      ? ".ultrawork/.gitignore 不存在"
+      : ".ultrawork/.gitignore 缺少必要行 `*`";
+    problems.push(
+      `${missing}：.ultrawork/ 的內容可能被送進版控。模板只有 \`*\` 一行（全部忽略）；` +
+        `插件不會自動改寫既有檔案，請手動補上。`,
+    );
+    warnings.push(`[gitignore] ${missing}，.ultrawork/ 的內容可能被送進版控（必要行 \`*\` 缺失）。`);
+  }
+  if (health.exemptsSettingsFile) {
+    problems.push(
+      "專案設定檔 ultrawork.jsonc 仍被豁免（`!ultrawork.jsonc` 還在）：它不會被忽略，" +
+        "可能被送進版控。想跟新模板（只有 `*` 一行）一致就手動刪掉那行豁免；插件不會自動改。",
+    );
+    warnings.push("[gitignore] 專案設定檔 ultrawork.jsonc 仍被豁免，可能被送進版控。");
+  }
+  checks.push({
+    name: "Ultrawork Gitignore",
+    status: problems.length > 0 ? "warn" : "passed",
+    details: problems.length > 0
+      ? problems.join("；")
+      : ".ultrawork/.gitignore 有必要行 `*`，且專案設定檔沒有被豁免",
+  });
+}
+
+/**
+ * 被版控追蹤的 `.ultrawork/` 檔案檢查：(b) 含已追蹤的 `ultrawork.jsonc`。
+ *
+ * 唯讀的 `git ls-files`；查不到（不是 git repo、沒有 git）就標 skipped。
+ * 只提示用 `git rm --cached` 取消追蹤，絕不動使用者的版控。
+ */
+function collectUltraworkGitTrackingCheck(
+  projectRoot: string,
+  checks: CheckItem[],
+  warnings: string[],
+): void {
+  const health = collectUltraworkGitTracking(projectRoot);
+  if (health.tracked === null) {
+    checks.push({
+      name: "Ultrawork Git Tracking",
+      status: "skipped",
+      details: `無法列出被追蹤的檔案（${health.unavailableReason ?? "git 不可用"}），未檢查 .ultrawork/ 是否被版控追蹤。`,
+    });
+    return;
+  }
+  if (health.tracked.length === 0) {
+    checks.push({
+      name: "Ultrawork Git Tracking",
+      status: "passed",
+      details: "沒有 .ultrawork/ 內的檔案被版控追蹤",
+    });
+    return;
+  }
+  const shown = health.tracked.slice(0, 10).join("、");
+  const suffix = health.tracked.length > 10 ? `等 ${health.tracked.length} 個` : "";
+  checks.push({
+    name: "Ultrawork Git Tracking",
+    status: "warn",
+    details:
+      `${health.tracked.length} 個 .ultrawork/ 內的檔案正被版控追蹤（${shown}${suffix}）：` +
+      "本機工作流狀態不該進版控。用 git rm --cached 取消追蹤（插件不會動你的版控）。",
+  });
+  warnings.push(
+    `[tracking] ${health.tracked.length} 個 .ultrawork/ 檔案被版控追蹤（${shown}${suffix}），請用 git rm --cached 取消追蹤。`,
+  );
 }
 
 /**
@@ -301,7 +481,9 @@ function migrationPendingHeadline(migration: MigrationStateReport): string {
 /**
  * 標記那半句：只在意「標記在不在」與「位置安不安全」的差別。
  *
- * `migrationPendingHeadline()` 在有舊資料時才呼叫它。
+ * `migrationPendingHeadline()` 在有舊資料時才呼叫它。檔案在、但裡面沒有本層完成
+ * 記錄時（共用目錄的另一層標記、空舊標記）不能說「不存在」—— 使用者去磁碟上找，
+ * 那個檔案明明就在那裡；要講的是「沒有本層的記錄」。
  */
 function migrationMarkerClause(migration: MigrationStateReport): string {
   if (migration.markerExists) {
@@ -309,6 +491,9 @@ function migrationMarkerClause(migration: MigrationStateReport): string {
       ` ${migration.markerPath} 存在，但 .ultrawork 的位置未通過安全檢查，` +
       `無法確認那是本專案的資料位置`
     );
+  }
+  if (migration.markerFilePresent) {
+    return ` ${migration.markerPath} 存在，但裡面沒有本層的完成記錄`;
   }
   return ` ${migration.markerPath} 不存在`;
 }
