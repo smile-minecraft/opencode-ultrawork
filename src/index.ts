@@ -7,6 +7,7 @@
  */
 
 import type { Plugin } from "@opencode/plugin";
+import { ensureMemoryStoreMigrated } from "./migrate/memory-store.ts";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { BUILTIN_MODULES } from "./modules/index.ts";
@@ -40,6 +41,7 @@ export async function setupUltrawork(ctx: Plugin.Context, overrides: SetupOverri
     overrides.projectDir ?? ctx.location?.project?.directory ?? ctx.location?.directory;
   // 舊資料搬遷：算完兩層路徑就先做一次，失敗只警告，不讓外掛載入失敗。
   await runMigration(globalDir, projectDir, overrides.migrateFs);
+  if (isExistingDirectory(projectDir)) await ensureMemoryStoreMigrated(projectDir!);
   const loaded = loadSettings({
     globalDir: typeof globalDir === "string" ? globalDir : undefined,
     projectDir,

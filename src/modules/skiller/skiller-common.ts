@@ -1306,8 +1306,10 @@ const DEDENTED_LINE_PATTERN = /^ {0,2}\S/;
 // V2 形狀：`permissions:` 頂層鍵 + block sequence 項目。刻意不綁死單一排版——
 // 縮排寬度自檔內既有項目推導，鍵順序與引號形式由比對時正規化。
 const V2_PERMISSIONS_KEY_PATTERN = /^permissions:(.*)$/;
-const V2_ITEM_START_PATTERN = /^( *)- ([A-Za-z_][A-Za-z0-9_]*):[ \t]+(\S+)$/;
-const V2_ITEM_FIELD_PATTERN = /^( +)([A-Za-z_][A-Za-z0-9_]*):[ \t]+(\S+)$/;
+// 值允許中間帶空白（shell 規則如 `resource: git status *`），頭尾空白不算值；
+// 值本身是否為可解讀的單行純量另由 isSupportedV2Scalar 把關。
+const V2_ITEM_START_PATTERN = /^( *)- ([A-Za-z_][A-Za-z0-9_]*):[ \t]+(\S(?:.*\S)?)[ \t]*$/;
+const V2_ITEM_FIELD_PATTERN = /^( +)([A-Za-z_][A-Za-z0-9_]*):[ \t]+(\S(?:.*\S)?)[ \t]*$/;
 /** Permission.Rule 的欄位（@opencode/schema Permission.Rule）；多一個少一個都算異常。 */
 const V2_RULE_FIELDS: ReadonlySet<string> = new Set(["action", "resource", "effect"]);
 /** 縮排含 tab 一律 fail closed：YAML 不允許 tab 當結構縮排，猜不出意圖。 */
@@ -1419,6 +1421,21 @@ function unquoteScalar(value: string): string {
 }
 
 /**
+ * 帶空白的值只接受兩種不會被誤讀的形式，其餘 fail closed：
+ *   - 整段成對引號包住（`"git status *"`、`'git status *'`）；
+ *   - 純量裡沒有 ` #`（會變成行尾註解）也沒有 `: `／結尾 `:`（會變成巢狀映射）。
+ * 不帶空白的值維持原本的接受範圍。
+ */
+function isSupportedV2Scalar(value: string): boolean {
+  if (!/\s/.test(value)) return true;
+  const first = value[0];
+  if (first === '"' || first === "'") {
+    return value.length >= 2 && value[value.length - 1] === first && !value.slice(1, -1).includes(first);
+  }
+  return !/\s#/.test(value) && !/:(\s|$)/.test(value);
+}
+
+/**
  * 從 from 往後找第一個非空行；全是空行時回 lines.length。
  * 序列項目之間可以夾空行，掃描必須跨過它們，不能只掃前半段就下結論。
  */
@@ -1460,7 +1477,7 @@ function parseV2Permissions(lines: string[], keyIdx: number): V2ParseResult {
     if (!/^\s/.test(line)) break;
     if (TAB_INDENT_PATTERN.test(line)) return { ok: false };
     const start = V2_ITEM_START_PATTERN.exec(line);
-    if (!start) return { ok: false };
+    if (!start || !isSupportedV2Scalar(start[3]!)) return { ok: false };
     const indent = start[1]!;
     if (dashIndent === null) dashIndent = indent;
     else if (indent !== dashIndent) return { ok: false };
@@ -1488,7 +1505,7 @@ function parseV2Permissions(lines: string[], keyIdx: number): V2ParseResult {
       // 下一個項目的第一行：交回外層迴圈處理。
       if (V2_ITEM_START_PATTERN.test(cont)) break;
       const field = V2_ITEM_FIELD_PATTERN.exec(cont);
-      if (!field) return { ok: false };
+      if (!field || !isSupportedV2Scalar(field[3]!)) return { ok: false };
       if (field[1] !== fieldIndent) return { ok: false };
       if (!V2_RULE_FIELDS.has(field[2]!)) return { ok: false };
       // 重複欄位無法判定哪個才是真相。

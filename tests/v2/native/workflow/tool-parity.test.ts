@@ -31,7 +31,7 @@ describe("workflow 工具介面 parity", () => {
     expect(task.required).toEqual(["event"]);
     expect(Object.keys(task.properties)).toEqual([
       "event", "taskId", "title", "from", "to", "owner", "priority", "reason",
-      "projectId", "projectPath", "memoryReceiptId", "risk", "verdict", "reviewer",
+      "projectId", "projectPath", "risk", "verdict", "reviewer",
       "note", "acceptance", "verbose",
     ]);
     expect(task.properties.event.enum).toEqual(["create", "transition", "complete", "cancel", "fail", "block", "review", "status"]);

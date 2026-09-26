@@ -1,3 +1,4 @@
+import { writeMemoryTopic } from "./_helpers.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -58,7 +59,7 @@ describe("workflow_health_check 檢查與健康訊號", () => {
     expect(r.checks.length).toBeGreaterThan(0);
     expect(checkByName(r, "Memory Directory Resolution").status).toBe("passed");
     expect(checkByName(r, "Tasks Registry Project Binding").status).toBe("passed");
-    expect(checkByName(r, "project.md exists").status).toBe("passed");
+    expect(checkByName(r, "Memory Store").status).toBe("passed");
     expect(r.health_signals.baseline_state).toBe("missing");
     expect(r.health_signals.suppressions_total).toBe(0);
     // commentSignal 真的註冊了 7 個工具，預期 6 + 7 == 實際 13
@@ -74,7 +75,7 @@ describe("workflow_health_check 檢查與健康訊號", () => {
     expect(r.ok).toBe(false);
     expect(r.overallStatus).toBe("failed");
     expect(checkByName(r, "Memory Directory Resolution").status).toBe("failed");
-    expect(checkByName(r, "project.md exists").status).toBe("failed");
+    expect(checkByName(r, "Memory Store").status).toBe("passed");
     expect(checkByName(r, "Content Store Consistency").status).toBe("skipped");
     await fake.registration?.dispose();
   });
@@ -218,16 +219,18 @@ describe("workflow_health_check overallStatus 聚合", () => {
     await fake.registration?.dispose();
   });
 
-  test("project.md 超過有效上限 → warn 且 ok=false", async () => {
+  test("記憶主題超過預算 → warn、degraded，ok 維持 true", async () => {
     const root = await tempRoot();
     writeMinimalWorkspace(root);
-    writeMemoryFile(root, "project.md", "---\nlimit: 1000\n---\n# P\n\n" + "x".repeat(1_500) + "\n");
+    writeMemoryTopic(root, "x".repeat(4500) + "\n", "超大主題", "oversized");
     const fake = await setupDiagnostics(root, diagnosticsOnlySettings());
     const r = await callTool(fake, "workflow_health_check");
-    expect(r.ok).toBe(false);
-    expect(r.overallStatus).toBe("failed");
-    expect(r.memory_budget.project_md_status).toBe("warn");
-    expect(r.warnings.some((w: string) => /project\.md 超過大小上限/.test(w))).toBe(true);
+    // 預算超標不影響外掛運作，只提示整理；遷移產生的超大主題也走這條。
+    expect(r.ok).toBe(true);
+    expect(r.overallStatus).toBe("degraded");
+    expect(r.memory_budget.layers.project.status).toBe("warn");
+    expect(r.memory_budget.layers.project.oversized_topics).toEqual(["oversized"]);
+    expect(r.warnings.some((w: string) => w.includes("超過預算"))).toBe(true);
     await fake.registration?.dispose();
   });
 
@@ -249,7 +252,7 @@ describe("workflow_health_check overallStatus 聚合", () => {
     makePlansDir(root);
     // 這個案例要斷言的只有「warn 而非 error」，所以其他存在性檢查都得先鋪好，
     // 否則 project.md exists 這類硬檢查會把 overallStatus 拉到 failed。
-    writeMemoryFile(root, "project.md", "---\nlabel: project\nlimit: 7000\n---\n# Project Overview\n\n");
+    writeMemoryTopic(root, "---\nlabel: project\nlimit: 7000\n---\n# Project Overview\n\n");
     // finishedTaskIds 列了 t-1，但 t-1 在 tasks.json 還是進行中 → warn（非 error）
     writePlansRegistry(root, {
       planId: "p-warn",
@@ -353,12 +356,12 @@ describe("實際工具集合的取得路徑", () => {
     await registration?.dispose();
   });
 
-  test("全部模組開啟時，預期集合是 48 個、實際只有診斷模組的 6 個 → 不一致", async () => {
+  test("全部模組開啟時，預期集合是 49 個、實際只有診斷模組的 6 個 → 不一致", async () => {
     const root = await tempRoot();
     writeMinimalWorkspace(root);
     const fake = await setupDiagnostics(root, DEFAULT_SETTINGS);
     const r = await callTool(fake, "workflow_health_check", { includeBaselineCheck: false });
-    expect(r.health_signals.tool_count_expected).toBe(48);
+    expect(r.health_signals.tool_count_expected).toBe(49);
     expect(r.health_signals.tool_count_actual).toBe(6);
     expect(r.health_signals.tool_count_match).toBe(false);
     expect(checkByName(r, "Tool Manifest Self-Consistency").status).toBe("failed");

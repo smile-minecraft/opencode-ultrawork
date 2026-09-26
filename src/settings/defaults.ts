@@ -35,10 +35,11 @@ export interface UltraworkSettings {
     /** 能呼叫 change-scope-check 的 agent；預設 build 與 ultra。 */
     scopeCheckAllowedAgents: string[];
   };
+  memory: { writerAgents: string[]; inject: boolean };
   workflow: {
     completion: {
-      /** memory 模組開啟時預設要求同步紀錄；關閉時由完成前檢查自行放行。 */
-      requireMemoryReceipt: boolean;
+      /** memory 模組開啟時預設要求記憶處置；關閉時由完成前檢查自行放行。 */
+      requireMemoryDisposition: boolean;
     };
     evidencePack: {
       /** 派發時強制檢查實作說明七節格式的 subagent；預設 implementer／debugger／ultra-coder。 */
@@ -69,9 +70,10 @@ export const DEFAULT_SETTINGS: UltraworkSettings = {
     runAllowedAgents: ["momus"],
     scopeCheckAllowedAgents: ["build", "ultra"],
   },
+  memory: { writerAgents: ["memorizer"], inject: true },
   workflow: {
     completion: {
-      requireMemoryReceipt: true,
+      requireMemoryDisposition: true,
     },
     evidencePack: {
       gatedSubagents: ["implementer", "debugger", "ultra-coder"],

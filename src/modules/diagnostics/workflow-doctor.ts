@@ -46,6 +46,7 @@ import {
   collectContentRefIntegrity,
   collectContentStoreMarker,
   collectMemoryBudget,
+  memoryWriterConfigCheck,
   collectMissingContentRef,
   collectPlanRegistryHealth,
   collectStateProjectionDivergence,
@@ -53,6 +54,8 @@ import {
   checkUltraworkGitignore,
   emptyMemoryBudget,
   emptyPlanRegistryHealth,
+  isSameAsGlobalConfigDir,
+  isSharedGlobalLayerEntry,
   readPlansForDiagnostics,
   readTasksForDiagnostics,
   resolveCurrentTaskId,
@@ -123,12 +126,12 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
         "Memory Module Switch",
         true,
         memoryEnabled
-          ? "memory 模組已啟用（專案記憶與同步紀錄由 memory 模組管理）"
-          : "memory 模組已關閉（project.md 與同步紀錄不由本外掛維護）",
+          ? "memory 模組已啟用（兩層記憶與結案處置由 memory 模組管理）"
+          : "memory 模組已關閉（兩層記憶與結案處置不由本外掛維護）",
       );
       if (!memoryEnabled) {
         warnings.push(
-          "memory 模組已關閉；project.md 與同步紀錄不由本外掛維護，下面的檔案大小檢查可能找不到資料。",
+          "memory 模組已關閉；兩層記憶與結案處置不由本外掛維護，下面的檔案大小檢查可能找不到資料。",
         );
       }
 
@@ -147,21 +150,15 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
         );
       }
 
-      check("project.md exists", existsSync(join(paths.MEMORY_DIR, "project.md")), paths.PROJECT_MD);
       check("state.md exists", existsSync(join(paths.MEMORY_DIR, "state.md")), paths.STATE_MD);
       check("tasks.json exists", existsSync(paths.TASKS_JSON), paths.TASKS_JSON);
 
       // ── 記憶體預算 ──
-      const budget = collectMemoryBudget(paths);
+      const budget = collectMemoryBudget(paths, deps.globalConfigDir);
       diagnosis.memory_budget = budget.memory_budget;
       warnings.push(...budget.warnings);
-      if (budget.configurationError) {
-        (diagnosis as { code?: string }).code = "CONFIGURATION_ERROR";
-        diagnosisOk = false;
-      }
-      if (budget.projectMdSize > budget.effectiveProjectLimit) {
-        diagnosisOk = false;
-      }
+      diagnosis.checks.push(...budget.checks);
+      diagnosis.checks.push(memoryWriterConfigCheck(deps.settings.memory.writerAgents));
 
       // ── 進行中計畫的 contentRef 缺漏 ──
       if (plansReason) {
@@ -310,8 +307,11 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
       // ── `.ultrawork/` 版控衛生：.gitignore 必要行、被追蹤的檔案、設定檔豁免 ──
       // 三種都是 warn（不影響 ok，外掛照常運作）；插件只提示，絕不改使用者的版控。
       // 全域層不建 `.gitignore`、插件不插手使用者的全域政策，這裡只看專案層。
-      collectUltraworkGitignoreCheck(paths.PROJECT_ROOT, checks, warnings);
-      collectUltraworkGitTrackingCheck(paths.PROJECT_ROOT, checks, warnings);
+      // 專案根目錄就是全域設定資料夾時，兩層共用同一個 `.ultrawork/`：全域層的檔案
+      // 要不要進版控是使用者的全域政策，不算專案資料外洩。
+      const sharedWithGlobal = isSameAsGlobalConfigDir(paths.PROJECT_ROOT, deps.globalConfigDir);
+      collectUltraworkGitignoreCheck(paths.PROJECT_ROOT, sharedWithGlobal, checks, warnings);
+      collectUltraworkGitTrackingCheck(paths.PROJECT_ROOT, sharedWithGlobal, checks, warnings);
 
       // workflow 模組關閉時，註冊檔來源的檢查沒有資料來源可診斷。
       if (!workflowEnabled) {
@@ -377,6 +377,7 @@ function describeBlockingRefIssues(blocking: readonly ContentRefIssue[]): string
  */
 function collectUltraworkGitignoreCheck(
   projectRoot: string,
+  sharedWithGlobal: boolean,
   checks: CheckItem[],
   warnings: string[],
 ): void {
@@ -392,7 +393,8 @@ function collectUltraworkGitignoreCheck(
     );
     warnings.push(`[gitignore] ${missing}，.ultrawork/ 的內容可能被送進版控（必要行 \`*\` 缺失）。`);
   }
-  if (health.exemptsSettingsFile) {
+  // 同資料夾時 ultrawork.jsonc 也是全域設定檔，豁免它是使用者的全域版控政策。
+  if (health.exemptsSettingsFile && !sharedWithGlobal) {
     problems.push(
       "專案設定檔 ultrawork.jsonc 仍被豁免（`!ultrawork.jsonc` 還在）：它不會被忽略，" +
         "可能被送進版控。想跟新模板（只有 `*` 一行）一致就手動刪掉那行豁免；插件不會自動改。",
@@ -413,9 +415,13 @@ function collectUltraworkGitignoreCheck(
  *
  * 唯讀的 `git ls-files`；查不到（不是 git repo、沒有 git）就標 skipped。
  * 只提示用 `git rm --cached` 取消追蹤，絕不動使用者的版控。
+ *
+ * 專案根目錄就是全域設定資料夾時，全域層的檔案（`SHARED_GLOBAL_LAYER_ENTRIES`）
+ * 不列入警告，只在 details 註明排除了哪些；專案層的工作流資料照常警告。
  */
 function collectUltraworkGitTrackingCheck(
   projectRoot: string,
+  sharedWithGlobal: boolean,
   checks: CheckItem[],
   warnings: string[],
 ): void {
@@ -428,25 +434,31 @@ function collectUltraworkGitTrackingCheck(
     });
     return;
   }
-  if (health.tracked.length === 0) {
+  const globalLayer = sharedWithGlobal ? health.tracked.filter(isSharedGlobalLayerEntry) : [];
+  const tracked = sharedWithGlobal ? health.tracked.filter((entry) => !isSharedGlobalLayerEntry(entry)) : health.tracked;
+  const globalNote = globalLayer.length > 0
+    ? `；專案根目錄同時是全域設定資料夾，${globalLayer.length} 個全域層檔案（${globalLayer.join("、")}）` +
+      "由你的全域版控政策決定，不列入檢查"
+    : "";
+  if (tracked.length === 0) {
     checks.push({
       name: "Ultrawork Git Tracking",
       status: "passed",
-      details: "沒有 .ultrawork/ 內的檔案被版控追蹤",
+      details: `沒有 .ultrawork/ 內的${globalLayer.length > 0 ? "專案資料" : "檔案"}被版控追蹤${globalNote}`,
     });
     return;
   }
-  const shown = health.tracked.slice(0, 10).join("、");
-  const suffix = health.tracked.length > 10 ? `等 ${health.tracked.length} 個` : "";
+  const shown = tracked.slice(0, 10).join("、");
+  const suffix = tracked.length > 10 ? `等 ${tracked.length} 個` : "";
   checks.push({
     name: "Ultrawork Git Tracking",
     status: "warn",
     details:
-      `${health.tracked.length} 個 .ultrawork/ 內的檔案正被版控追蹤（${shown}${suffix}）：` +
-      "本機工作流狀態不該進版控。用 git rm --cached 取消追蹤（插件不會動你的版控）。",
+      `${tracked.length} 個 .ultrawork/ 內的檔案正被版控追蹤（${shown}${suffix}）：` +
+      `本機工作流狀態不該進版控。用 git rm --cached 取消追蹤（插件不會動你的版控）${globalNote}。`,
   });
   warnings.push(
-    `[tracking] ${health.tracked.length} 個 .ultrawork/ 檔案被版控追蹤（${shown}${suffix}），請用 git rm --cached 取消追蹤。`,
+    `[tracking] ${tracked.length} 個 .ultrawork/ 檔案被版控追蹤（${shown}${suffix}），請用 git rm --cached 取消追蹤。`,
   );
 }
 

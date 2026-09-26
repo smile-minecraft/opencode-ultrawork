@@ -8,10 +8,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { defineTool, type DefinedTool, type ToolExecutionContext } from "../../kit/define-tool.ts";
+import { queryTerms, containsTerm } from "../../kit/text-search.ts";
 import { jsonResult } from "../../kit/json.ts";
 import { resolveGlobalConfigDir, resolveGlobalUltraworkDir } from "../../settings/paths.ts";
 import { SessionStateStore, type KeyValueStorage, type SessionStateStoreOptions } from "../../state/store.ts";
 import { assertSafeGlobalUltraworkPath } from "./containment.ts";
+
+export { queryTerms } from "../../kit/text-search.ts";
 
 const BLOCK_PATTERN = /<available_skills>\n([\s\S]*?)\n<\/available_skills>/;
 // V1 的每個技能是 name／description／location；V2 在 name 前面多一個 id、沒有 location。
@@ -128,34 +131,9 @@ export function createSkillCatalogStore(
 
 const HAN = /\p{Script=Han}/u;
 
-/** 把查詢切成詞：先依空白與標點切開，中英文夾雜的再拆成中文段與英文段，中文段再補兩字片段。 */
-export function queryTerms(query: string): string[] {
-  const terms = new Set<string>();
-  for (const word of query.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
-    for (const run of word.match(/\p{Script=Han}+|[^\p{Script=Han}]+/gu) ?? []) {
-      terms.add(run);
-      // 中文沒有空白分詞，整段之外再拆成兩字一組，才對得到描述裡的片段。
-      if (HAN.test(run) && run.length > 2) {
-        for (let index = 0; index < run.length - 1; index += 1) terms.add(run.slice(index, index + 2));
-      }
-    }
-  }
-  return [...terms];
-}
-
 /** 去掉空白並轉小寫；中文關鍵字常被寫成「去 AI 味」，查詢卻打成「去AI味」。 */
 function compact(text: string): string {
   return text.toLowerCase().replace(/\s+/g, "");
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** 英文以完整單字比對，避免「ci」命中「decide」；含中文的片段直接比對子字串。 */
-function containsTerm(haystack: string, term: string): boolean {
-  if (HAN.test(term)) return haystack.includes(term);
-  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(term)}($|[^a-z0-9])`).test(haystack);
 }
 
 /** 整個關鍵字出現在查詢裡：含中文的忽略空白比對，英文要是完整的詞組。 */

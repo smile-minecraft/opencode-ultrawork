@@ -1,8 +1,8 @@
 # opencode-ultrawork
 
-OpenCode V2 原生外掛，提供 48 個工具與 6 個 hook，負責工作區搜尋、驗證、工作說明檢查、Comment Signal、技能管理、任務與計畫狀態、診斷和專案記憶。工具的名稱、參數與回傳格式是對外凍結的介面，改動前要先取得使用者同意。
+OpenCode V2 原生外掛，提供 49 個工具與 6 個 hook，負責工作區搜尋、驗證、工作說明檢查、Comment Signal、技能管理、任務與計畫狀態、診斷和專案記憶。工具的名稱、參數與回傳格式是對外凍結的介面，改動前要先取得使用者同意。
 
-來源：介面凍結清單見 `src/modules/diagnostics/inventory.ts`（48 工具、6 hook、11 分類），並由 `tests/v2/native/diagnostics/tool-parity.test.ts` 逐項把關。
+來源：介面凍結清單見 `src/modules/diagnostics/inventory.ts`（49 工具、6 hook、11 分類），並由 `tests/v2/native/diagnostics/tool-parity.test.ts` 逐項把關。
 
 > 本文提到的 `src/…`、`tests/…`、`AGENTS.md` 都是 repo 裡的路徑。npm 套件只內含 `src/`、`schema/`、`index.ts`、`README.md`、`LICENSE`，其餘檔案請到 [GitHub repo](https://github.com/smile-minecraft/opencode-ultrawork) 對應的 branch 查看。
 
@@ -19,7 +19,7 @@ OpenCode V2 原生外掛，提供 48 個工具與 6 個 hook，負責工作區�
 | `skiller` | 技能的掃描、驗證、草稿、晉升／退役／還原、匯入與政策更新 |
 | `workflow` | 任務與計畫的狀態、內容、工作說明檢查與派遣流程 |
 | `diagnostics` | 啟動導引、健康檢查、工具／hook 清單與自我測試 |
-| `memory` | 專案記憶與同步紀錄 |
+| `memory` | 兩層記憶、快照注入與結案處置 |
 
 各模組提供的工具（名稱以 `src/modules/**` 的實作為準）：
 
@@ -30,7 +30,7 @@ OpenCode V2 原生外掛，提供 48 個工具與 6 個 hook，負責工作區�
 - `skiller`：`skiller-scan`、`skiller-validate`、`skiller-draft`、`skiller-draft-read`、`skiller-draft-update`、`skiller-draft-delete`、`skiller-promote`、`skiller-retire`、`skiller-restore`、`skiller-import`、`skiller-policy-update`
 - `workflow`：`task-state-sync`、`task-content-read`、`task-content-update`、`plan-state-sync`、`plan-task-link`、`plan-status`、`plan-next`、`plan-progress-reconcile`、`plan-content-create`、`plan-content-read`、`plan-content-update`、`plan-content-delete`、`work-order-build`
 - `diagnostics`：`workflow_bootstrap`、`workflow_doctor`、`workflow_health_check`、`workflow_l1_check`、`tool_hook_manifest`、`ultrawork_selftest`
-- `memory`：`project-memory-read`、`project-memory-update`、`project-memory-rewrite`、`memory-receipt-create`、`memory-receipt-read`、`memory-receipt-list`
+- `memory`：`memory-search`、`memory-read`、`memory-note`、`memory-extract`、`memory-write`、`memory-maintain`、`memory-task-close`
 
 hook 共 6 個（名稱凍結，註冊點對照見 `src/modules/diagnostics/inventory.ts` 的 `HOOK_WIRING_SOURCE`）：`event`、`tool.execute.before`、`tool.execute.after`、`experimental.chat.system.transform`、`experimental.session.compacting`、`tool.definition`。
 
@@ -46,8 +46,8 @@ hook 共 6 個（名稱凍結，註冊點對照見 `src/modules/diagnostics/inve
 | 形式 | 寫法 | 版本 | 適用情境 |
 |---|---|---|---|
 | npm | `"opencode-ultrawork"` | 自動抓 `latest`，會跟著更新 | 一般使用者，想直接用最新版本 |
-| npm（釘住 major） | `"opencode-ultrawork@^2.1.0"` | 只收 `2.x` 的更新 | 想自動吃小改動，但不跨大版本 |
-| npm（完全釘住） | `"opencode-ultrawork@2.1.0"` | 固定不動 | 需要可重現的環境 |
+| npm（釘住 major） | `"opencode-ultrawork@^2.2.0"` | 只收 `2.x` 的更新 | 想自動吃小改動，但不跨大版本 |
+| npm（完全釘住） | `"opencode-ultrawork@2.2.0"` | 固定不動 | 需要可重現的環境 |
 | git | `"github:smile-minecraft/opencode-ultrawork#<完整 commit hash>"` | 固定在那個 commit | 要用還沒發布的 commit，或追 V2 開發進度 |
 | 本機目錄 | `"/path/to/opencode-ultrawork"` | 跟你 working tree 走 | 開發這個外掛本身 |
 
@@ -64,7 +64,7 @@ npm 形式（一般使用者）：
 ```jsonc
 {
   // 收 2.x 的更新，不跨到 3.0
-  "plugins": ["opencode-ultrawork@^2.1.0"]
+  "plugins": ["opencode-ultrawork@^2.2.0"]
 }
 ```
 
@@ -124,10 +124,15 @@ git 形式（固定版本、不自動更新）：
     // 能呼叫 change-scope-check 的 agent，預設 build 與 ultra
     "scopeCheckAllowedAgents": ["build", "ultra"]
   },
+  "memory": {
+    // writerAgents 只採全域設定；空陣列表示沒有 writer
+    "writerAgents": ["memorizer"],
+    "inject": true
+  },
   "workflow": {
     "completion": {
-      // memory 模組開啟時預設要求同步紀錄；關閉時由完成前檢查自行放行
-      "requireMemoryReceipt": true
+      // memory 模組開啟時預設要求記憶處置；關閉時由完成前檢查自行放行
+      "requireMemoryDisposition": true
     },
     "evidencePack": {
       // 派發 subagent 時強制檢查實作說明七節格式的名單，預設這三個
@@ -137,7 +142,7 @@ git 形式（固定版本、不自動更新）：
 }
 ```
 
-模組開關在 `modules` 底下，預設全部開啟；關掉的模組不註冊工具、不掛 hook（`src/settings/defaults.ts`）。`memory` 關閉時，任務結案不再要求同步紀錄；`commentSignal` 關閉時，結案流程的相關檢查回報「未啟用」而不是失敗。
+模組開關在 `modules` 底下，預設全部開啟；關掉的模組不註冊工具、不掛 hook（`src/settings/defaults.ts`）。`memory` 關閉時，任務結案不再要求記憶處置；`commentSignal` 關閉時，結案流程的相關檢查回報「未啟用」而不是失敗。
 
 驗證工具的 agent 授權清單（`verification.runAllowedAgents`、`verification.scopeCheckAllowedAgents`）與實作說明檢查的受控 subagent（`workflow.evidencePack.gatedSubagents`）都可以在設定覆寫，預設值見上例。型別寫錯（例如把清單寫成字串）會在載入時警告並退回預設，不影響外掛載入。空陣列代表清空名單：`runAllowedAgents`／`scopeCheckAllowedAgents` 為空時沒有 agent 能呼叫該工具（fail closed），`gatedSubagents` 為空時不再做派發前檢查。授權清單在模組註冊時快照，改完要重新載入才生效（同下）。
 
@@ -145,7 +150,7 @@ git 形式（固定版本、不自動更新）：
 
 ## 資料位置與搬遷
 
-外掛的資料放在 `<專案>/.ultrawork/`（專案根目錄以該次呼叫所在工作階段的位置為準）：`ultrawork.jsonc`、`tasks.json`、`plans.json`、`state.md`、`plans/`、`project.md`、`receipts/`、`comment-signal-baseline.json`、`audit.jsonl`、`cache/`（可重建的快照），以及外掛建立的 `.gitignore`（內容只有 `*` 一行，整個目錄都不進版控，含設定檔本身）。
+外掛的資料放在 `<專案>/.ultrawork/`（專案根目錄以該次呼叫所在工作階段的位置為準）：`ultrawork.jsonc`、`tasks.json`、`plans.json`、`state.md`、`plans/`、`memory/`、`comment-signal-baseline.json`、`audit.jsonl`、`cache/`（可重建的快照），以及外掛建立的 `.gitignore`（內容只有 `*` 一行，整個目錄都不進版控，含設定檔本身）。
 
 第一次在某個專案啟動時，外掛會把舊位置的資料自動搬到 `.ultrawork/`（實作見 `src/migrate/migrate.ts`、`src/migrate/items.ts`）：
 
@@ -166,6 +171,7 @@ git 形式（固定版本、不自動更新）：
 - 模板只有 `*` 一行；`.ultrawork/` 是本機工作流狀態，預設不進版控（含設定檔本身；以前模板豁免過設定檔，既有專案想跟新模板一致就手動刪掉那行豁免）。
 - 檔案不存在才建立；已存在永遠不自動改寫——有必要行 `*` 就視為正常，自訂內容（例如自己加回豁免行）不再每次啟動警告；缺 `*` 才警告。
 - 全域層不建 `.gitignore`，外掛也不插手使用者的全域版控政策。
+- 專案根目錄就是全域設定資料夾時（在全域設定資料夾本身開工作階段），兩層共用同一個 `.ultrawork/`。這時 `workflow_doctor` 會把全域層的檔案（`skills-policy.json`、`skills-personal.json`、`skill-drafts/`、`skill-quarantine/`、同時身為全域設定檔的 `ultrawork.jsonc`，以及 `.gitignore` 本身）排除在「被版控追蹤」與「設定檔被豁免」的警告之外，只在 details 註明；專案層的工作流資料（`tasks.json` 等）被追蹤時照常警告（實作見 `src/modules/diagnostics/shared.ts` 的 `isSameAsGlobalConfigDir`）。
 - `workflow_doctor` 會回報三種版控衛生問題（都是 warn，不影響診斷 `ok`，外掛只提示、絕不改使用者的版控）：「`.gitignore` 不存在或缺少必要行 `*`」「`.ultrawork/` 內有檔案被版控追蹤（唯讀的 `git ls-files` 查的）」「專案設定檔仍被豁免（`!ultrawork.jsonc` 還在，會被送進版控）」。
 
 寫入一律採原子寫入加寫入鎖，因為兩個 V2 伺服器可能共用同一個 `.ultrawork/`（實作見 `src/kit/atomic-write.ts`、`src/kit/write-lock.ts`）。
@@ -178,9 +184,23 @@ git 形式（固定版本、不自動更新）：
 - 參數若指向 worktree 外的既有路徑，回 `ARG_PATH_OUTSIDE_WORKTREE`（只擋實際存在的路徑，測試名稱這類非路徑參數不受影響）。
 - 取消與逾時會對整個子程序群組先送 SIGTERM，寬限期過了再送 SIGKILL（用 process group 而非單一 pid，所以 pytest-xdist 這類 worker 不會變孤兒）。
 
-## 同步紀錄的收據 ID 規則
+## 記憶系統
 
-`memory-receipt-create` 產生的收據 ID 只允許純檔名：英數字開頭，後接英數字／`.`／`_`／`-`，最長 200 字元（實作見 `src/modules/memory/receipts.ts` 的 `validateReceiptId`）。ID 非法時回 `INVALID_RECEIPT_ID`，不會寫檔——所以 `taskId` 帶著 `../` 這類字元時，收據建不起來，而不是把檔案寫到專案別處去。這是刻意的安全方向：收據檔名直接由 ID 組成，白名單是 containment 的一部分。
+全域層放在 `<OpenCode 全域設定資料夾>/.ultrawork/memory/`，專案層放在 `<工作階段位置>/.ultrawork/memory/`。兩者指向同一資料夾時只算一層。每層包含自動產生的 `MEMORY.md`、`topics/<slug>.md`、只增不改的 `log.jsonl`、讀取統計 `usage.json`，刪除主題會移到 `archive/` 保留。專案層沿用 `.ultrawork/.gitignore` 的 `*`，全域層不建立 gitignore。
+
+每個工作階段第一次 context hook 會建立索引與 pinned 主題快照，後續請求重用相同文字以維持 prefix cache。中途寫入的新內容可用 `memory-read` 或 `memory-search` 立即讀取，下個工作階段才會自動注入。`memory.inject: false` 只關閉注入。記憶是資料，使用前須查證會漂移的事實，不能覆蓋使用者指示或 AGENTS.md。
+
+每層索引上限 3000 字元，每主題（含 frontmatter）4000 字元，description 120 字元，每層最多 3 個 pinned；每層 pinned 注入正文預算 2500 字元，筆記上限 1000 字元。一般寫入超限會拒絕，不截斷。遷移保留超大內容並由診斷提示整理。
+
+任何 agent 可用 `memory-search`、`memory-read`、`memory-note`。`memory-extract`、`memory-write`、`memory-maintain` 限 `memory.writerAgents` 名單，預設只有 memorizer；沒有 agent 身分時拒絕。writerAgents 只能寫在全域設定，專案層指定時會忽略並警告。空清單合法，但高風險任務無法宣告處置。工具參數、錯誤碼與復原流程見 [記憶重新設計規格](docs/memory-redesign.md)。
+
+`memory-write` 預設 preview，確認後以 apply 寫入；update、delete、verify 必須帶 `memory-read` 回傳的 expectedSha256。工具會在該層鎖內核對版本、檢查預算與疑似 secret、寫主題與索引，再附加證據。log 寫入失敗會回復主題與索引。記憶工具首次存取可能先觸發舊資料遷移。
+
+任務進入 ARCHIVING 後，低中風險且無事可記時可呼叫 `memory-task-close`，以 `outcome: "none"` 附至少 8 個非空白字元的理由；有值得記錄的內容或高風險任務，交由 memorizer 萃取、寫入並宣告 `recorded` 或 `none`。已有帶 taskId 的寫入時不能宣告 none。`task-state-sync complete` 不再接受記憶參數，會查處置時間、writer、寫入引用、hash 鏈與主題目前 SHA。memory 模組關閉或 `workflow.completion.requireMemoryDisposition: false` 時略過並警告。舊設定 requireMemoryReceipt 已移除，載入時會警告並忽略舊值。
+
+hash 鏈用來偵測手動修改與非工具寫入，無法阻止有檔案寫入權的人重算整條鏈，威脅模型與 tasks.json 相同。確認目前內容正確後，writer 可用 `memory-maintain` 的 `reseal-log` 模式附理由復原。驗鏈改從最新有效 reseal 開始，舊寫入引用仍須存在且屬於同一任務。log 不截斷，超過 5 MB 由 doctor 提醒。
+
+升級時會在既有 `.opencode/` 搬遷之後，將 `.ultrawork/project.md` 按 H2 拆成主題並重建索引；code fence 裡的 H2 不拆。舊檔與 receipts 目錄改名加上 `.migrated-<時間戳>` 保留。只有 ARCHIVING 任務的有效舊收據會轉成 legacy-receipt 處置。失敗不寫完成標記，下次存取重試，不覆寫既有主題。診斷工具會回報兩層預算、鏈完整性、待整理筆記、遷移狀態與 writer 設定。
 
 ## Comment Signal 的掃描政策與結案 gate
 
@@ -211,7 +231,7 @@ Comment Signal 只掃「註解語法有對應 lexer 分支」的副檔名，共 
 
 `skiller.personalSkillRoot` 與 `skiller.agentsDir` 只採全域層的值（實作見 `src/settings/load.ts` 的 `stripProjectSkillerRoots`）。理由是這兩個 key 決定「寫到專案外哪裡」：專案層若能改寫它們，clone 來的 repo 自帶的設定就能把寫入導到任意路徑。專案層帶著這些 key 會被整段忽略並警告，呼叫端只會看到全域層的值（或全域缺席時的內建預設）。
 
-角色檔的 skill 路由同時支援兩種形狀：V1（`permission:` 單數下的 `skill:` map）與 V2（`permissions:` 陣列）。V2 以最後一條命中的 effect 為準（last-match），與 V1 的語意一致；晉升／退役／還原在改寫路由時會保證新規則後面沒有 glob 能在 last-match 下把它蓋掉。混合形狀（同時有 V1 map 與 V2 陣列）的角色檔會被視為結構不明而拒絕改寫。三個 skiller 工具的描述不再寫死 `permission.skill`，以免誤導 V2 形狀的使用者。
+角色檔的 skill 路由同時支援兩種形狀：V1（`permission:` 單數下的 `skill:` map）與 V2（`permissions:` 陣列）。V2 以最後一條命中的 effect 為準（last-match），與 V1 的語意一致；晉升／退役／還原在改寫路由時會保證新規則後面沒有 glob 能在 last-match 下把它蓋掉。混合形狀（同時有 V1 map 與 V2 陣列）的角色檔會被視為結構不明而拒絕改寫。V2 規則的值可以帶空白（例如 shell 規則 `resource: git status *`）；帶空白的值只接受整段成對引號，或不含行尾註解（` #`）與巢狀映射（`: `、結尾 `:`）的純量，其餘同樣拒絕改寫。三個 skiller 工具的描述不再寫死 `permission.skill`，以免誤導 V2 形狀的使用者。
 
 ## 寫入鎖卡住時怎麼辦
 
@@ -230,7 +250,7 @@ Comment Signal 只掃「註解語法有對應 lexer 分支」的副檔名，共 
 
 以下是在設定 repo（`~/.config/opencode` 那一側）要做的事：
 
-1. `opencode.jsonc` 加上 `"plugins": [..., "opencode-ultrawork@^2.1.0"]`（或用 `github:` 形式釘住某個 commit，見「安裝」）；刪掉 `plugins/opencode-ultrawork.ts`、`plugins/opencode-ultrawork/`、`tests/ultrawork/`、`scripts/generate-ultrawork-baseline.ts`。
+1. `opencode.jsonc` 加上 `"plugins": [..., "opencode-ultrawork@^2.2.0"]`（或用 `github:` 形式釘住某個 commit，見「安裝」）；刪掉 `plugins/opencode-ultrawork.ts`、`plugins/opencode-ultrawork/`、`tests/ultrawork/`、`scripts/generate-ultrawork-baseline.ts`。
 2. `skills-policy.json`、`skills-personal.json`、`skill-drafts/`、`skill-quarantine/` 搬到 `<全域設定資料夾>/.ultrawork/`（外掛第一次啟動會自動搬；但設定 repo 裡讀它們的 `scripts/skill-approval.ts`、`scripts/skill-profile.ts`、`lib/skill-capability.ts` 和 `tests/config/` 的契約測試要改路徑）。
 3. `AGENTS.md`、`agents/*.md`、`commands/*.md` 裡的 `.opencode/memory/…`、`.opencode/plans/…` 字串改成 `.ultrawork/…`。
 4. `lib/dcp-evidence-policy.ts` 列的是 ultrawork 工具名稱，名稱沒變就不用改。
@@ -246,7 +266,7 @@ bun run typecheck
 
 `src/**` 零 V1 import 的 gate：`tests/v2/native/v1-free-surface.test.ts`。三者都要通過才算完成一個階段（`AGENTS.md`）。
 
-提醒：48 個工具的名稱、參數與回傳格式是對外介面，凍結清單由 `tests/v2/native/diagnostics/tool-parity.test.ts` 把關；任何改變都要先問使用者（`AGENTS.md`）。
+提醒：49 個工具的名稱、參數與回傳格式是對外介面，凍結清單由 `tests/v2/native/diagnostics/tool-parity.test.ts` 把關；任何改變都要先問使用者（`AGENTS.md`）。
 
 ## 授權
 

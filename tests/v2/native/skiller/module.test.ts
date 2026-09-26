@@ -26,7 +26,7 @@ describe("skiller 原生模組註冊", () => {
         modules: { skiller: true },
         skiller: { personalSkillRoot: "/tmp/skills", agentsDir: "/tmp/agents" },
         skills: { catalog: "index" },
-        workflow: { completion: { requireMemoryReceipt: true } },
+        workflow: { completion: { requireMemoryDisposition: true } },
       },
     } as never);
 

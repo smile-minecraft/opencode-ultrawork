@@ -93,6 +93,7 @@ export function normalizeTaskLeaf(raw: unknown, projectFallback?: ProjectBinding
     planRef: typeof source.planRef === "string" ? source.planRef : undefined,
     specRef: typeof source.specRef === "string" ? source.specRef : undefined,
     indexRef: typeof source.indexRef === "string" ? source.indexRef : undefined,
+    archivingAt: typeof source.archivingAt === "string" ? source.archivingAt : undefined,
     updatedAt: String(source.updatedAt || new Date(0).toISOString()),
     history: Array.isArray(source.history) ? source.history.map(String) : [],
     // Plan system fields (v4.0)

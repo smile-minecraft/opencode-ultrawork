@@ -11,7 +11,9 @@
  *   `createWorkflowRuntime` 產物，讀到的位置與寫入端逐字一致。
  */
 
+import { homedir } from "node:os";
 import type { Plugin } from "@opencode/plugin";
+import { resolveGlobalConfigDir } from "../../settings/paths.ts";
 import type { UltraworkSettings } from "../../settings/defaults.ts";
 import { isModuleEnabled } from "../registry.ts";
 import { createWorkflowRuntime, type FullUltraworkRuntimeContext } from "../workflow/index.ts";
@@ -21,6 +23,13 @@ export interface DiagnosticsDeps {
   readonly ctx: Plugin.Context;
   readonly settings: UltraworkSettings;
   readonly runtime: FullUltraworkRuntimeContext;
+  /**
+   * 全域設定資料夾，解析規則與外掛入口、skiller 相同（`ctx.options.globalDir` 優先）。
+   *
+   * 專案根目錄就是這個資料夾時，兩層共用同一個 `.ultrawork/`，版控衛生檢查要把
+   * 全域層的檔案排除（見 `shared.ts` 的 `isSameAsGlobalConfigDir`）。
+   */
+  readonly globalConfigDir: string;
   /**
    * 平台實際註冊的工具清單。
    *
@@ -48,11 +57,17 @@ export function createDiagnosticsDeps(
   settings: UltraworkSettings,
 ): DiagnosticsDeps {
   const runtime = createWorkflowRuntime(ctx, settings);
+  const options = (ctx.options ?? {}) as Record<string, unknown>;
+  const globalConfigDir =
+    typeof options.globalDir === "string"
+      ? options.globalDir
+      : resolveGlobalConfigDir(process.env as Record<string, string | undefined>, homedir());
   const toolDomain = ctx.tool as unknown as { list?: () => Promise<readonly { id: string }[]> };
   return {
     ctx,
     settings,
     runtime,
+    globalConfigDir,
     listRegisteredToolNames: async () => {
       if (typeof toolDomain?.list !== "function") return null;
       try {

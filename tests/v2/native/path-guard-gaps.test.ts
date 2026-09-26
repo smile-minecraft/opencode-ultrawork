@@ -15,8 +15,8 @@ import { setupUltrawork } from "../../../src/index.ts";
 import type { MigrateFsOps } from "../../../src/migrate/types.ts";
 import { migrateProjectData } from "../../../src/migrate/index.ts";
 import { commentSignalModule } from "../../../src/modules/comment-signal/index.ts";
-import { createReceiptTools } from "../../../src/modules/memory/receipts.ts";
-import { createProjectMemoryTools } from "../../../src/modules/memory/project-memory.ts";
+import { createMemorySearchTool } from "../../../src/modules/memory/tools/memory-search.ts";
+import { createMemoryReadTool } from "../../../src/modules/memory/tools/memory-read.ts";
 import { resolveReadableTarget } from "../../../src/modules/search/search-utils.ts";
 import {
   captureTrackedFileSnapshots,
@@ -81,16 +81,16 @@ describe("家目錄當根：各模組一致拒絕", () => {
   });
 
   test("memory read：家目錄回 UNSAFE_ROOT", async () => {
-    const tools = createProjectMemoryTools(async () => HOME);
-    const raw = await tools["project-memory-read"].execute({ mode: "digest" }, fakeV2ToolContext());
+    const tool = createMemoryReadTool({resolveRoot:async()=>HOME,globalRoot:HOME,writerAgents:[],taskMaterials:async()=>null});
+    const raw = await tool.execute({ layer: "project", topic: "test" }, fakeV2ToolContext());
     const parsed = JSON.parse(raw.content);
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe("UNSAFE_ROOT");
   });
 
   test("memory receipt-list：家目錄回 UNSAFE_ROOT", async () => {
-    const tools = createReceiptTools(async () => HOME);
-    const raw = await tools["memory-receipt-list"].execute({}, fakeV2ToolContext());
+    const tool = createMemorySearchTool({resolveRoot:async()=>HOME,globalRoot:HOME,writerAgents:[],taskMaterials:async()=>null});
+    const raw = await tool.execute({query:"test"}, fakeV2ToolContext());
     const parsed = JSON.parse(raw.content);
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe("UNSAFE_ROOT");

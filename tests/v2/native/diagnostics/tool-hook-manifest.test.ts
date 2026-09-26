@@ -21,9 +21,9 @@ describe("tool_hook_manifest 完整清單", () => {
     const fake = await setupDiagnostics(await tempRoot());
     const r = await callTool(fake, "tool_hook_manifest");
     expect(r.ok).toBe(true);
-    expect(r.toolCount).toBe(48);
+    expect(r.toolCount).toBe(49);
     expect(r.hookCount).toBe(6);
-    expect(r.sourceCount).toBe(36);
+    expect(r.sourceCount).toBe(41);
     expect(Array.isArray(r.tools)).toBe(true);
     expect(Array.isArray(r.hooks)).toBe(true);
     expect(Array.isArray(r.sources)).toBe(true);
@@ -41,7 +41,7 @@ describe("tool_hook_manifest 完整清單", () => {
     expect(r.hooks.every((h: any) => h.wired === true)).toBe(true);
 
     expect(r.humanSummary).toMatch(/Tool\/Hook Manifest/);
-    expect(r.humanSummary).toMatch(/tools: 48/);
+    expect(r.humanSummary).toMatch(/tools: 49/);
     expect(r.humanSummary).toMatch(/hooks: 6/);
     await fake.registration?.dispose();
   });
@@ -121,19 +121,19 @@ describe("tool_hook_manifest category 過濾", () => {
   test("空白 category 視為未過濾", async () => {
     const fake = await setupDiagnostics(await tempRoot());
     const r = await callTool(fake, "tool_hook_manifest", { category: "   " });
-    expect(r.toolCount).toBe(48);
+    expect(r.toolCount).toBe(49);
     await fake.registration?.dispose();
   });
 });
 
 describe("tool_hook_manifest 反映模組開關", () => {
-  test("關閉 skiller → 只列 37 個工具、11 個來源", async () => {
+  test("關閉 skiller → 只列 38 個工具、32 個來源", async () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.modules.skiller = false;
     const fake = await setupDiagnostics(await tempRoot(), settings);
     const r = await callTool(fake, "tool_hook_manifest");
-    expect(r.toolCount).toBe(37);
-    expect(r.sourceCount).toBe(27);
+    expect(r.toolCount).toBe(38);
+    expect(r.sourceCount).toBe(32);
     expect(r.tools.some((t: any) => t.name === "skiller-scan")).toBe(false);
     await fake.registration?.dispose();
   });

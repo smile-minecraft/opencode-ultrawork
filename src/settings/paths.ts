@@ -6,7 +6,8 @@
  * env 與家目錄都由參數注入，方便測試。
  */
 
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 export function resolveGlobalConfigDir(
   env: Record<string, string | undefined>,
@@ -32,4 +33,22 @@ export function resolveProjectUltraworkDir(projectDir: string): string {
 /** 兩層的 ultrawork.jsonc 完整路徑。 */
 export function settingsFilePath(ultraworkDir: string): string {
   return join(ultraworkDir, "ultrawork.jsonc");
+}
+
+/**
+ * 專案根目錄與全域設定資料夾是不是同一個資料夾。
+ *
+ * 用 realpath 比對，`/var` 與 `/private/var` 這類別名、結尾斜線都不影響判定；
+ * 任一邊解析不到（不存在）就退回字面上的 `resolve()` 比對。
+ */
+export function isSameAsGlobalConfigDir(projectRoot: string, globalConfigDir: string | undefined): boolean {
+  if (globalConfigDir === undefined || globalConfigDir.trim() === "") return false;
+  const canonical = (path: string): string => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return resolve(path);
+    }
+  };
+  return canonical(projectRoot) === canonical(globalConfigDir);
 }

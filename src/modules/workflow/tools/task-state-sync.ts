@@ -11,7 +11,7 @@ import { jsonResult } from "../../../kit/json.ts";
  *   - tool name：`task-state-sync`（plugin tool registry key）。
  *   - `args` schema 保留既有欄位並以專用 event 管理終態（description / event / taskId /
  *     title / from / to / owner / priority / reason / projectId / projectPath /
- *     memoryReceiptId / risk / verdict / reviewer / note / acceptance / verbose）。
+ *     risk / verdict / reviewer / note / acceptance / verbose）。
  *   - 各 event 分支（create / transition / complete / cancel / fail / block / review /
  *     status）的回傳 JSON 形狀必須與原 closure 版本一致；`warnings` 為選填欄位，
  *     只在有提醒時出現，不影響既有欄位。
@@ -25,8 +25,8 @@ import { jsonResult } from "../../../kit/json.ts";
  *     `TITLE_REQUIRED` / `INITIAL_STATE_REQUIRED` / `INVALID_INITIAL_STATE` /
  *     `OWNER_REQUIRED` / `PRIORITY_REQUIRED` / `TASK_NOT_FOUND` /
  *     `TRANSITION_STATE_REQUIRED` / `STATE_MISMATCH` / `TERMINAL_STATE_CONFLICT` /
- *     `DEDICATED_EVENT_REQUIRED` / `INVALID_TRANSITION` / `MEMORY_RECEIPT_REQUIRED` /
- *     `INVALID_MEMORY_RECEIPT` / `REASON_REQUIRED` / `CROSS_PROJECT` /
+ *     `DEDICATED_EVENT_REQUIRED` / `INVALID_TRANSITION` / `MEMORY_DISPOSITION_REQUIRED` /
+ *     記憶處置驗證的錯誤碼（見 `memory/disposition.ts`）/ `REASON_REQUIRED` / `CROSS_PROJECT` /
  *     `REVIEW_REQUIRED` / `REVIEW_VERDICT_INVALID` / `REVIEW_NOTE_REQUIRED` /
  *     `ACCEPTANCE_REQUIRED`。這些值不可改。
  *
@@ -53,11 +53,11 @@ import { jsonResult } from "../../../kit/json.ts";
  *     `.ultrawork/audit.jsonl`（只增不改）。寫入失敗採 fail-open，
  *     但會在 `warnings` 講出來，不靜默。
  *   - 缺項一次列齊，並以 `blockedBy` 陣列結構化回報（值：`review` /
- *     `memory-receipt` / `state`），呼叫端不必解析中文訊息就知道還缺什麼。
- *   - `complete` 的主要錯誤碼優先序：審查 → 同步紀錄 → 狀態。審查排最前面
- *     是因為補救成本差很多——補狀態和補同步紀錄都是機械性動作，補審查要跑一整輪
+ *     `memory` / `state`），呼叫端不必解析中文訊息就知道還缺什麼。
+ *   - `complete` 的主要錯誤碼優先序：審查 → 記憶處置 → 狀態。審查排最前面
+ *     是因為補救成本差很多——補狀態和補記憶處置都是機械性動作，補審查要跑一整輪
  *     獨立審查。既有情境的錯誤碼不受影響：低風險任務的審查檢查恆為通過，
- *     所以「只缺同步紀錄」仍然回 `MEMORY_RECEIPT_REQUIRED`。
+ *     所以「只缺記憶處置」仍然回 `MEMORY_DISPOSITION_REQUIRED`。
  *
  * 驗收閘門（v4.4）：
  *   - 任務上的 `acceptanceCriteria` 原本寫得進去卻沒有任何地方會檢查，
@@ -91,13 +91,14 @@ import { resolve } from "node:path";
 import type { UltraworkRuntimeContext } from "../runtime/context-builder.ts";
 import { markSessionTaskBound } from "../runtime/session-binding.ts";
 import { appendAuditEntry } from "../runtime/audit-log.ts";
+import { findTaskDisposition } from "../../memory/disposition.ts";
 
 /**
  * task_state_sync tool factory。
  *
  * 維持 thin glue 角色。factory 接收 closure-scoped runtime context（含
  * `getCurrentProject` / `readRegistry` / `writeRegistry` / `updateStateMd` /
- * `validateMemoryReceiptForTask` 等），回傳 plugin tool definition。
+ * `validateMemoryDispositionForTask` 等），回傳 plugin tool definition。
  *
  *   `UltraworkRuntimeContext` 實例。
  */
@@ -118,7 +119,7 @@ function buildTaskStateMachineDescription(): string {
   lines.push("表外規則：");
   lines.push("  · BLOCKED / COMPLETED / FAILED / CANCELLED 都必須走專用 event，不能用 transition。");
   lines.push("    - 走到 BLOCKED → 改用 event:\"block\"，並填 reason。");
-  lines.push("    - 走到 COMPLETED → 改用 event:\"complete\"，填 memoryReceiptId，且任務必須在 ARCHIVING。");
+  lines.push("    - 走到 COMPLETED → 改用 event:\"complete\"，先用 memory-task-close 記錄處置，且任務必須在 ARCHIVING。");
   lines.push("    - 走到 FAILED → 改用 event:\"fail\"，並填 reason。");
   lines.push("    - 走到 CANCELLED → 改用 event:\"cancel\"，並填 reason。");
   lines.push("  · 任務沒有 resume 事件；ARCHIVING 之後只能走 complete / fail / cancel。");
@@ -158,7 +159,6 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
       reason: z.string().optional(),
       projectId: z.string().optional(),
       projectPath: z.string().optional(),
-      memoryReceiptId: z.string().optional(),
       risk: z.string().optional(),
       verdict: z.string().optional(),
       reviewer: z.string().optional(),
@@ -179,7 +179,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
         '只作用於 event:"status"。預設回投影：任務一筆不少，但不含 history 與每筆重複的專案身分。要稽核 transition 紀錄或除錯時才傳 true。',
       ),
     }),
-    async execute({ event, taskId, title, from, to, owner, priority, reason, projectId, projectPath, memoryReceiptId, risk, verdict, reviewer, note, acceptance, verbose }, context) {
+    async execute({ event, taskId, title, from, to, owner, priority, reason, projectId, projectPath, risk, verdict, reviewer, note, acceptance, verbose }, context) {
       const currentProject = runtime.getCurrentProject(context);
       // 只認 "high"：申報制的整個強制力來自「不能撤回」，所以這裡不做等級比較，
       // 也不提供任何把 high 清掉的路徑。
@@ -346,7 +346,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
           const hint = to === "BLOCKED"
             ? `改用 event:"block"，並填 reason 才能轉到 BLOCKED。`
             : to === "COMPLETED"
-              ? `改用 event:"complete"，填 memoryReceiptId，且任務必須在 ARCHIVING。`
+              ? `改用 event:"complete"，先用 memory-task-close 記錄處置，且任務必須在 ARCHIVING。`
               : to === "FAILED"
                 ? `改用 event:"fail"，並填 reason 才能標記為 FAILED。`
                 : `改用 event:"cancel"，並填 reason 才能取消任務。`;
@@ -389,6 +389,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
           return jsonResult({ ok: false, code: "REVIEW_REQUIRED", blockedBy: ["review"], error: reviewBlockedMessage(task) });
         }
         task.state = to;
+        if (to === "ARCHIVING") task.archivingAt = timestamp;
         task.updatedAt = timestamp;
         task.history.push(`| ${timestamp} | ${from} → ${to} | ${owner || "—"} | 狀態轉換${upgradedRisk ? "（補報為高風險）" : ""} |`);
         task.history = task.history.slice(-TASK_HISTORY_LIMIT);
@@ -467,14 +468,23 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
         if (isFinishedTaskState(task.state)) {
           return jsonResult({ ok: false, code: "TERMINAL_STATE_CONFLICT", error: `任務已經在終態 ${task.state}，不能再完成` });
         }
-        // 合併狀態與 receipt 檢查：兩個問題同時存在時一次回報，
-        // 避免模型先白做一份 receipt 才被告知狀態不對。
+        // 合併狀態與記憶處置檢查：兩個問題同時存在時一次回報，
+        // 避免模型先白做一次記憶處置才被告知狀態不對。
         const prevState = task.state;
         const allowed = VALID_TRANSITIONS[prevState] || [];
         const stateOk = allowed.includes("COMPLETED");
-        const receiptOk = !runtime.memoryReceiptRequired || !!memoryReceiptId?.trim();
-        if (!runtime.memoryReceiptRequired) {
-          warnings.push("memory 模組未啟用，已略過專案記憶同步紀錄檢查。");
+        // 這裡只看「有沒有處置」，讓它能跟其他缺項一起回報；完整驗證在合併檢查通過之後。
+        // 記憶路徑讀不到（unsafe root、symlink）一律當成沒有處置，不讓工具拋例外。
+        const hasDisposition = (): boolean => {
+          try {
+            return !!findTaskDisposition(runtime.resolveProjectRoot(context), taskId);
+          } catch {
+            return false;
+          }
+        };
+        const memoryOk = !runtime.memoryDispositionRequired || hasDisposition();
+        if (!runtime.memoryDispositionRequired) {
+          warnings.push("memory 模組或結案政策未啟用，已略過記憶處置檢查。");
         }
         // 這裡是防禦線，不是主要防線：正常路徑下，沒審查過關的高風險任務在
         // REVIEWING → ARCHIVING 那一步就已經被擋下了，走不到這裡。留著是為了
@@ -482,13 +492,13 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
         // 情況 stateOk 也會是 false，兩個問題會一起列出來。
         const reviewOk = isReviewOk(task);
         const acceptanceCheck = checkAcceptance(task);
-        if (!stateOk || !receiptOk || !reviewOk || !acceptanceCheck.ok) {
+        if (!stateOk || !memoryOk || !reviewOk || !acceptanceCheck.ok) {
           const issues: string[] = [];
           if (!stateOk) {
             issues.push(`任務目前狀態 ${prevState}（不是 ARCHIVING），先走到 ARCHIVING 才能完成。`);
           }
-          if (!receiptOk) {
-            issues.push("task-state-sync 的 complete 需要 memoryReceiptId。");
+          if (!memoryOk) {
+            issues.push("task-state-sync 的 complete 需要 memory-task-close 的記憶處置。");
           }
           if (!reviewOk) {
             issues.push(reviewBlockedMessage(task));
@@ -496,21 +506,21 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
           if (!acceptanceCheck.ok) {
             issues.push(acceptanceCheck.message);
           }
-          // 優先序：審查 → 驗收 → 同步紀錄 → 狀態。愈難補的排愈前面，主代理
-          // 才不會把便宜的都補完了才發現真正的障礙。驗收排在同步紀錄之前，
-          // 是因為「條件沒達成」代表工作還沒做完，補一份同步紀錄沒有意義。
+          // 優先序：審查 → 驗收 → 記憶處置 → 狀態。愈難補的排愈前面，主代理
+          // 才不會把便宜的都補完了才發現真正的障礙。驗收排在記憶處置之前，
+          // 是因為「條件沒達成」代表工作還沒做完，補記憶處置沒有意義。
           // 低風險任務的 reviewOk 恆為 true、沒填驗收條件的 acceptanceCheck
           // 恆為 ok，所以既有情境仍然落在原本的錯誤碼上。
           const primaryCode = !reviewOk
             ? "REVIEW_REQUIRED"
             : (!acceptanceCheck.ok
               ? "ACCEPTANCE_REQUIRED"
-              : (!receiptOk ? "MEMORY_RECEIPT_REQUIRED" : "INVALID_TRANSITION"));
+              : (!memoryOk ? "MEMORY_DISPOSITION_REQUIRED" : "INVALID_TRANSITION"));
           // 結構化缺項：呼叫端不必解析訊息文字就知道還差哪幾項。
           const blockedBy: string[] = [];
           if (!reviewOk) blockedBy.push("review");
           if (!acceptanceCheck.ok) blockedBy.push("acceptance");
-          if (!receiptOk) blockedBy.push("memory-receipt");
+          if (!memoryOk) blockedBy.push("memory");
           if (!stateOk) blockedBy.push("state");
           return jsonResult({ ok: false, code: primaryCode, blockedBy, error: issues.join(" ") });
         }
@@ -518,11 +528,11 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
         if (task.review?.reworkedAfterReview) {
           warnings.push("這個任務在審查通過之後又退回去改過，目前的審查結論對應的是修改前的版本，建議重新送審。");
         }
-        // 通過合併檢查後 memoryReceiptId 必為非空字串。
-        const safeReceiptId = memoryReceiptId?.trim() || "memory-disabled";
-        if (runtime.memoryReceiptRequired) {
-          const receiptValidation = runtime.validateMemoryReceiptForTask(safeReceiptId, task, currentProject, context);
-          if (!receiptValidation.ok) return jsonResult(receiptValidation);
+        let memoryDisposition: { outcome: string | undefined; seq: number } | undefined;
+        if (runtime.memoryDispositionRequired) {
+          const validation = runtime.validateMemoryDispositionForTask(task, currentProject, context);
+          if (!validation.ok) return jsonResult(validation);
+          memoryDisposition = { outcome: validation.disposition.outcome, seq: validation.disposition.seq };
         }
         const commentSignalCheck = await runtime.validateCommentSignalForCompletion(context?.sessionID);
         if (!commentSignalCheck.ok) return jsonResult(commentSignalCheck);
@@ -546,7 +556,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
         }
         task.state = "COMPLETED";
         task.updatedAt = timestamp;
-        task.history.push(`| ${timestamp} | ${prevState} → COMPLETED | ${owner || "—"} | 完成任務 | receipt=${safeReceiptId} |`);
+        task.history.push(`| ${timestamp} | ${prevState} → COMPLETED | ${owner || "—"} | 完成任務 | memory=${memoryDisposition ? `${memoryDisposition.outcome}#${memoryDisposition.seq}` : "disabled"} |`);
         task.history = task.history.slice(-TASK_HISTORY_LIMIT);
         if (task.risk === "high") {
           audit({
@@ -558,7 +568,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
             risk: task.risk,
             reviewVerdict: task.review?.verdict,
             staleReview: !!task.review?.reworkedAfterReview,
-            memoryReceiptId: safeReceiptId,
+            memoryDisposition,
           });
         }
         registry.activeTaskIds = registry.activeTaskIds.filter(id => id !== taskId);

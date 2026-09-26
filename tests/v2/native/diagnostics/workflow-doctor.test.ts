@@ -1,3 +1,4 @@
+import { writeMemoryTopic } from "./_helpers.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { statSync, symlinkSync } from "node:fs";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -39,24 +40,24 @@ describe("workflow_doctor 記憶體預算", () => {
     writeMinimalWorkspace(root);
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_doctor");
-    expect(r.memory_budget.project_md_status).toBe("ok");
+    expect(r.memory_budget.layers.project.status).toBe("ok");
     expect(r.memory_budget.state_md_status).toBe("ok");
     expect(r.memory_budget.bootstrap_full_status).toBe("ok");
     expect(r.memory_budget.registry_projection_divergence).toBe(false);
-    expect(r.memory_budget.project_md_hard_limit).toBe(7000);
+    expect(r.memory_budget.layers.project.index_limit).toBe(3000);
     expect(r.ok).toBe(true);
     await fake.registration?.dispose();
   });
 
   test("project.md 超過有效上限 → warn 且 ok=false", async () => {
     const root = await tempRoot();
-    writeMemoryFile(root, "project.md", "---\nlimit: 1000\n---\n# P\n\n" + "a".repeat(1_500) + "\n");
+    writeMemoryTopic(root, "---\nlimit: 1000\n---\n# P\n\n" + "a".repeat(4500) + "\n");
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_doctor");
     expect(r.ok).toBe(false);
-    expect(r.memory_budget.project_md_status).toBe("warn");
-    expect(r.memory_budget.project_md_over_by).toBeGreaterThan(0);
-    expect(r.warnings.some((w: string) => w.includes("project.md 超過大小上限"))).toBe(true);
+    expect(r.memory_budget.layers.project.status).toBe("warn");
+    expect(r.memory_budget.layers.project.oversized_topics).toContain("fixture");
+    expect(r.warnings.some((w: string) => w.includes("記憶超過預算"))).toBe(true);
     await fake.registration?.dispose();
   });
 
@@ -72,8 +73,8 @@ describe("workflow_doctor 記憶體預算", () => {
 
   test("bootstrap full 預估超過 soft budget → warn", async () => {
     const root = await tempRoot();
-    writeMemoryFile(root, "project.md", "---\nlimit: 7000\n---\n# P\n\n" + "a".repeat(6_000) + "\n");
-    writeMemoryFile(root, "state.md", "---\nlimit: 3000\n---\n# S\n\n" + "b".repeat(2_900) + "\n");
+    writeMemoryTopic(root, "---\nlimit: 7000\n---\n# P\n\n" + "a".repeat(6_000) + "\n");
+    writeMemoryFile(root, "state.md", "---\nlimit: 3000\n---\n# S\n\n" + "b".repeat(10_000) + "\n");
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_doctor");
     expect(r.memory_budget.bootstrap_full_status).toBe("warn");
@@ -81,15 +82,14 @@ describe("workflow_doctor 記憶體預算", () => {
     await fake.registration?.dispose();
   });
 
-  test("project.md frontmatter limit 無效 → CONFIGURATION_ERROR", async () => {
+  test("主題格式錯誤回報 integrity warn", async () => {
     const root = await tempRoot();
-    writeMemoryFile(root, "project.md", "---\nlimit: abc\n---\n# P\n");
+    writeMemoryTopic(root, "正文");
+    writeMemoryFile(root, "memory/topics/fixture.md", "壞格式");
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_doctor");
-    expect(r.ok).toBe(false);
-    expect(r.code).toBe("CONFIGURATION_ERROR");
-    expect(r.memory_budget.project_md_status).toBe("warn");
-    await fake.registration?.dispose();
+    expect(r.checks.find((c: any) => c.name === "Memory Log Integrity").status).toBe("warn");
+    expect(r.checks.find((c: any) => c.name === "Memory Store").status).toBe("warn");
   });
 
   test("進行中計畫缺 contentRef → warn；已完成的計畫不報", async () => {
@@ -367,7 +367,7 @@ describe("workflow_doctor 依賴不可得時的 skipped 行為", () => {
   test("六個診斷工具都不寫入任何檔案", async () => {
     const root = await tempRoot();
     makePlansDir(root);
-    writeMemoryFile(root, "project.md", "---\nlimit: 7000\n---\n# P\n");
+    writeMemoryTopic(root, "---\nlimit: 7000\n---\n# P\n");
     writeMemoryFile(root, "state.md", "---\nlimit: 3000\n---\n# S\n");
     writeTasksRegistry(root, { taskId: "t-1", state: "IN_PROGRESS" });
     writeStateMd(root, "IN_PROGRESS", "t-1");

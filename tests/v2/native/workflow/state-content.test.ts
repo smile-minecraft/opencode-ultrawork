@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_SETTINGS, type UltraworkSettings } from "../../../../src/settings/defaults.ts";
+import { memoryLayer, withMemoryLock } from "../../../../src/modules/memory/layers.ts";
+import { appendLog } from "../../../../src/modules/memory/log.ts";
 import { callTool, setupWorkflow } from "./_helpers.ts";
 
 const roots: string[] = [];
@@ -42,18 +44,20 @@ describe("workflow task／plan 狀態機與內容", () => {
     })).ok).toBe(true);
     const registry = JSON.parse(await readFile(join(root, ".ultrawork/tasks.json"), "utf8"));
     const task = registry.tasks.t1;
-    await mkdir(join(root, ".ultrawork/receipts"), { recursive: true });
-    await writeFile(join(root, ".ultrawork/receipts/r1.json"), JSON.stringify({
-      taskId: "t1", projectId: task.projectId, projectPath: task.projectPath,
-      status: "ok", createdAt: new Date().toISOString(), zeroExtractionReason: "無可擷取資料",
-    }));
+    expect(typeof task.archivingAt).toBe("string");
+    const layer = memoryLayer(root);
+    await withMemoryLock(layer, () =>
+      appendLog(layer, [
+        { kind: "disposition", taskId: "t1", outcome: "none", reason: "沒有需要保留的新知識", agent: "memorizer", sessionID: "s1" },
+      ]),
+    );
     const blocked = await callTool(fake, "task-state-sync", {
-      event: "complete", taskId: "t1", memoryReceiptId: "r1",
+      event: "complete", taskId: "t1",
     });
     expect(blocked.code).toBe("ACCEPTANCE_REQUIRED");
     expect(blocked.data.blockedBy).toContain("acceptance");
     const completed = await callTool(fake, "task-state-sync", {
-      event: "complete", taskId: "t1", memoryReceiptId: "r1",
+      event: "complete", taskId: "t1",
       acceptance: [{ criterion: "測試通過", met: true, evidence: "目標測試已通過" }],
     });
     expect(completed.data.state).toBe("COMPLETED");
@@ -63,7 +67,7 @@ describe("workflow task／plan 狀態機與內容", () => {
     });
     await advanceToArchiving(fake, "t2");
     const receiptMissing = await callTool(fake, "task-state-sync", { event: "complete", taskId: "t2" });
-    expect(receiptMissing.code).toBe("MEMORY_RECEIPT_REQUIRED");
+    expect(receiptMissing.code).toBe("MEMORY_DISPOSITION_REQUIRED");
     await fake.registration?.dispose();
   });
 
@@ -77,7 +81,7 @@ describe("workflow task／plan 狀態機與內容", () => {
     await advanceToArchiving(fake, "t1");
     const result = await callTool(fake, "task-state-sync", { event: "complete", taskId: "t1" });
     expect(result.ok).toBe(true);
-    expect(result.data.warnings.join("\n")).toContain("memory 模組未啟用");
+    expect(result.data.warnings.join("\n")).toContain("memory 模組或結案政策未啟用");
     expect(result.data.warnings.join("\n")).toContain("Comment Signal 模組未啟用");
     await fake.registration?.dispose();
   });

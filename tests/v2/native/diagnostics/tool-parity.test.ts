@@ -3,7 +3,7 @@
  *
  * ⚠️ 這裡的 `FROZEN_*` 清單是**對外介面的凍結值**，不是測試Fixtures。
  *
- * 48 個工具的名稱與參數、6 個 hook 名、11 個分類、36 個來源檔位置都是這個
+ * 49 個工具的名稱與參數、6 個 hook 名、11 個分類、41 個來源檔位置都是這個
  * 外掛對呼叫端（OpenCode runtime、既有設定、使用者的 script）承諾的介面。
  * 改動其中任何一項都算**對外介面變更**，需要先問過使用者，不能當成普通
  * 重構順手改掉。
@@ -50,9 +50,13 @@ const FROZEN_TOOL_NAMES: readonly string[] = [
   "comment_signal_suppress",
   "comment_signal_touched_report",
   "grep_context",
-  "memory-receipt-create",
-  "memory-receipt-list",
-  "memory-receipt-read",
+  "memory-extract",
+  "memory-maintain",
+  "memory-note",
+  "memory-read",
+  "memory-search",
+  "memory-task-close",
+  "memory-write",
   "peek_file",
   "plan-content-create",
   "plan-content-delete",
@@ -63,9 +67,6 @@ const FROZEN_TOOL_NAMES: readonly string[] = [
   "plan-state-sync",
   "plan-status",
   "plan-task-link",
-  "project-memory-read",
-  "project-memory-rewrite",
-  "project-memory-update",
   "skill_search",
   "skiller-draft",
   "skiller-draft-delete",
@@ -112,8 +113,13 @@ const FROZEN_SOURCE_PATHS: readonly string[] = [
   "src/modules/diagnostics/workflow-doctor.ts",
   "src/modules/diagnostics/workflow-health-check.ts",
   "src/modules/diagnostics/workflow-l1-check.ts",
-  "src/modules/memory/project-memory.ts",
-  "src/modules/memory/receipts.ts",
+  "src/modules/memory/tools/memory-extract.ts",
+  "src/modules/memory/tools/memory-maintain.ts",
+  "src/modules/memory/tools/memory-note.ts",
+  "src/modules/memory/tools/memory-read.ts",
+  "src/modules/memory/tools/memory-search.ts",
+  "src/modules/memory/tools/memory-task-close.ts",
+  "src/modules/memory/tools/memory-write.ts",
   "src/modules/search/grep-context.ts",
   "src/modules/search/peek-file.ts",
   "src/modules/skiller/skiller-draft-ops.ts",
@@ -142,10 +148,10 @@ const FROZEN_SOURCE_PATHS: readonly string[] = [
 const FROZEN_CATEGORIES: readonly string[] = [
   "comment_signal",
   "grep_peek",
-  "memory_receipt",
+  "memory_curation",
+  "memory_query",
   "plan_content",
   "plan_state",
-  "project_memory",
   "skill",
   "task_content",
   "task_state",
@@ -154,6 +160,14 @@ const FROZEN_CATEGORIES: readonly string[] = [
 ];
 
 const FROZEN_TOOL_CATEGORIES: Readonly<Record<string, string>> = {
+  "memory-search": "memory_query",
+  "memory-read": "memory_query",
+  "memory-note": "memory_curation",
+  "memory-extract": "memory_curation",
+  "memory-write": "memory_curation",
+  "memory-maintain": "memory_curation",
+  "memory-task-close": "memory_curation",
+
   "change-scope-check": "verification",
   "comment_signal_baseline": "comment_signal",
   "comment_signal_check": "comment_signal",
@@ -163,9 +177,6 @@ const FROZEN_TOOL_CATEGORIES: Readonly<Record<string, string>> = {
   "comment_signal_suppress": "comment_signal",
   "comment_signal_touched_report": "comment_signal",
   "grep_context": "grep_peek",
-  "memory-receipt-create": "memory_receipt",
-  "memory-receipt-list": "memory_receipt",
-  "memory-receipt-read": "memory_receipt",
   "peek_file": "grep_peek",
   "plan-content-create": "plan_content",
   "plan-content-delete": "plan_content",
@@ -176,9 +187,6 @@ const FROZEN_TOOL_CATEGORIES: Readonly<Record<string, string>> = {
   "plan-state-sync": "plan_state",
   "plan-status": "plan_state",
   "plan-task-link": "plan_state",
-  "project-memory-read": "project_memory",
-  "project-memory-rewrite": "project_memory",
-  "project-memory-update": "project_memory",
   "skill_search": "skill",
   "skiller-draft": "skill",
   "skiller-draft-delete": "skill",
@@ -313,10 +321,10 @@ describe("diagnostics 工具介面 parity", () => {
 });
 
 describe("凍結介面：inventory 與內嵌清單逐項對應", () => {
-  test("四個數量就是對外承諾的 48／6／36／11", () => {
-    expect(FROZEN_TOOL_NAMES).toHaveLength(48);
+  test("四個數量就是對外承諾的 49／6／41／11", () => {
+    expect(FROZEN_TOOL_NAMES).toHaveLength(49);
     expect(FROZEN_HOOK_NAMES).toHaveLength(6);
-    expect(FROZEN_SOURCE_PATHS).toHaveLength(36);
+    expect(FROZEN_SOURCE_PATHS).toHaveLength(41);
     expect(FROZEN_CATEGORIES).toHaveLength(11);
   });
 

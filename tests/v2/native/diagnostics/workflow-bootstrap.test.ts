@@ -1,3 +1,4 @@
+import { writeMemoryTopic } from "./_helpers.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,7 +27,7 @@ describe("workflow_bootstrap mode 參數規則", () => {
     expect(r.registry_summary).toBeDefined();
     expect(r.project).toBeDefined();
     expect(typeof r.hint).toBe("string");
-    expect(typeof r.l1_summary.project_md_size).toBe("number");
+    expect(typeof r.l1_summary.memory_index_chars.project).toBe("number");
     expect(typeof r.l1_summary.state_md_size).toBe("number");
     await fake.registration?.dispose();
   });
@@ -42,10 +43,7 @@ describe("workflow_bootstrap mode 參數規則", () => {
 
   test("mode='full' 同時回 project_md 與 state_md 全文", async () => {
     const root = await tempRoot();
-    writeMemoryFile(
-      root,
-      "project.md",
-      "---\nlabel: project\nlimit: 5000\n---\n# Project\n\nPROJECT_MARKER_FULL_MODE\n",
+    writeMemoryTopic(root, "---\nlabel: project\nlimit: 5000\n---\n# Project\n\nPROJECT_MARKER_FULL_MODE\n",
     );
     writeMemoryFile(
       root,
@@ -56,20 +54,17 @@ describe("workflow_bootstrap mode 參數規則", () => {
     const r = await callTool(fake, "workflow_bootstrap", { mode: "full" });
     expect(r.ok).toBe(true);
     expect(r.mode).toBe("full");
-    expect(r.l1_content.project_md).toContain("PROJECT_MARKER_FULL_MODE");
+    expect(r.l1_content.memory_indexes?.project).toContain("fixture");
     expect(r.l1_content.state_md).toContain("STATE_MARKER_FULL_MODE");
     expect(r.l1_content.combined_chars).toBe(
-      (r.l1_content.project_md ?? "").length + (r.l1_content.state_md ?? "").length,
+      (r.l1_content.memory_indexes?.project ?? "").length + (r.l1_content.state_md ?? "").length,
     );
     await fake.registration?.dispose();
   });
 
   test("mode='project' 只回 project_md，state_md 為 null", async () => {
     const root = await tempRoot();
-    writeMemoryFile(
-      root,
-      "project.md",
-      "---\nlabel: project\nlimit: 5000\n---\n# Project\n\nPROJECT_ONLY_MARKER\n",
+    writeMemoryTopic(root, "---\nlabel: project\nlimit: 5000\n---\n# Project\n\nPROJECT_ONLY_MARKER\n",
     );
     writeMemoryFile(
       root,
@@ -79,17 +74,14 @@ describe("workflow_bootstrap mode 參數規則", () => {
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_bootstrap", { mode: "project" });
     expect(r.ok).toBe(true);
-    expect(r.l1_content.project_md).toContain("PROJECT_ONLY_MARKER");
+    expect(r.l1_content.memory_indexes?.project).toContain("fixture");
     expect(r.l1_content.state_md).toBeNull();
     await fake.registration?.dispose();
   });
 
   test("mode='state' 只回 state_md，project_md 為 null", async () => {
     const root = await tempRoot();
-    writeMemoryFile(
-      root,
-      "project.md",
-      "---\nlabel: project\nlimit: 5000\n---\n# Project\n\nSHOULD_NOT_APPEAR_PROJECT\n",
+    writeMemoryTopic(root, "---\nlabel: project\nlimit: 5000\n---\n# Project\n\nSHOULD_NOT_APPEAR_PROJECT\n",
     );
     writeMemoryFile(
       root,
@@ -100,7 +92,7 @@ describe("workflow_bootstrap mode 參數規則", () => {
     const r = await callTool(fake, "workflow_bootstrap", { mode: "state" });
     expect(r.ok).toBe(true);
     expect(r.l1_content.state_md).toContain("STATE_ONLY_MARKER");
-    expect(r.l1_content.project_md).toBeNull();
+    expect(r.l1_content.memory_indexes).toBeNull();
     await fake.registration?.dispose();
   });
 
@@ -108,13 +100,13 @@ describe("workflow_bootstrap mode 參數規則", () => {
     const root = await tempRoot();
     const projectMd = "---\nlabel: project\nlimit: 5000\n---\n# Project\n\n" + "x".repeat(50_000) + "\n";
     const stateMd = "---\nlabel: state\nlimit: 3000\n---\n# Project State\n\n" + "y".repeat(50_000) + "\n";
-    writeMemoryFile(root, "project.md", projectMd);
+    writeMemoryTopic(root, projectMd);
     writeMemoryFile(root, "state.md", stateMd);
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_bootstrap");
     expect(r.ok).toBe(true);
     expect(r.l1_content).toBeUndefined();
-    expect(r.l1_summary.project_md_size).toBe(projectMd.length);
+    expect(r.l1_summary.memory_index_chars.project).toBeLessThan(projectMd.length);
     expect(r.l1_summary.state_md_size).toBe(stateMd.length);
     await fake.registration?.dispose();
   });
@@ -128,7 +120,7 @@ describe("workflow_bootstrap 資料層路徑", () => {
       tasks: ".ultrawork/tasks.json",
       plans: ".ultrawork/plans.json",
       state: ".ultrawork/state.md",
-      project: ".ultrawork/project.md",
+      project: ".ultrawork/memory/MEMORY.md",
     });
     await fake.registration?.dispose();
   });

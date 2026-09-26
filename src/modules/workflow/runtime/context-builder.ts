@@ -11,7 +11,7 @@
  *         readPlansRegistry / writePlansRegistry。
  *       · StateProjectionRuntimeContext：+ updateStateMd。
  *       · FullUltraworkRuntimeContext：= RuntimeBaseContext + RegistryRuntimeContext +
- *         StateProjectionRuntimeContext + validateMemoryReceiptForTask。
+ *         StateProjectionRuntimeContext + validateMemoryDispositionForTask。
  *   - 各 layer factory 接受對應上層型別作 DI（無 `as unknown as` cast）。
  *
  * 對外規則（不可破壞）：
@@ -34,7 +34,7 @@
  * @see ./context.ts                                       — path / binding 純函式
  * @see ./registry-io.ts                                   — registry IO closure
  * @see ./state-projection.ts                              — state.md writer
- * @see ../../memory/receipt-validator.ts               — 同步紀錄 validator（單一實作）
+ * @see ../../memory/disposition.ts               — 記憶結案處置驗證（單一實作）
  */
 
 import { existsSync, mkdirSync } from "node:fs";
@@ -48,7 +48,9 @@ import { deriveProjectId } from "../core/helpers.ts";
 import { getPathsForRoot, isUnsafeRoot, type Paths } from "./context.ts";
 import { createRegistryIO, type RegistryIOOptions, type RegistryRuntimeContext } from "./registry-io.ts";
 import { createStateProjection, type StateProjectionRuntimeContext } from "./state-projection.ts";
-import { validateReceiptForCompletion, type ReceiptValidationResult } from "../../memory/index.ts";
+import { verifyTaskDisposition, type DispositionResult } from "../../memory/disposition.ts";
+import { homedir } from "node:os";
+import { resolveGlobalConfigDir } from "../../../settings/paths.ts";
 
 // ─── Layer 1：RuntimeBaseContext ─────────────────────────────
 
@@ -107,8 +109,8 @@ export interface StateProjectionRuntimeContextEx extends RegistryRuntimeContext 
  * 對應原 `UltraworkRuntimeContext` 介面（向後相容）。
  */
 export interface FullUltraworkRuntimeContext extends StateProjectionRuntimeContextEx {
-  /** memory 模組與政策都要求同步紀錄時才阻擋 complete。 */
-  memoryReceiptRequired: boolean;
+  /** memory 模組與政策都要求記憶處置時才阻擋 complete。 */
+  memoryDispositionRequired: boolean;
   /** 結案前讀取 Comment Signal 狀態；模組未啟用時直接略過。 */
   validateCommentSignalForCompletion(
     sessionID: string | undefined,
@@ -117,12 +119,11 @@ export interface FullUltraworkRuntimeContext extends StateProjectionRuntimeConte
     | { ok: false; code: "COMMENT_SIGNAL_BLOCKED"; error: string }
   >;
   /** 收據驗證（委派給 memory 模組的單一實作）：專案記憶更新階段 memory 更新紀錄 gate 核心。 */
-  validateMemoryReceiptForTask(
-    receiptId: string,
+  validateMemoryDispositionForTask(
     task: Task,
     currentProject: ProjectBinding,
     context?: ToolContext,
-  ): ReceiptValidationResult;
+  ): DispositionResult;
 }
 
 /**
@@ -271,17 +272,12 @@ export function createRuntimeContext(input: CreateRuntimeContextInput): FullUltr
   // Layer 4: 收據驗證直接委派給 memory 模組的單一實作（規則只存在一份）。
   const full: FullUltraworkRuntimeContext = {
     ...withStateProjection,
-    memoryReceiptRequired: true,
+    memoryDispositionRequired: true,
     async validateCommentSignalForCompletion() {
       return { ok: true, status: "not-reported" };
     },
-    validateMemoryReceiptForTask: (receiptId, task, currentProject, context) =>
-      validateReceiptForCompletion(
-        withStateProjection.resolveProjectRoot(context),
-        receiptId,
-        { taskId: task.taskId },
-        currentProject,
-      ),
+    validateMemoryDispositionForTask: (task, currentProject, context) =>
+      verifyTaskDisposition({ projectRoot: withStateProjection.resolveProjectRoot(context), globalMemoryRoot: resolveGlobalConfigDir(process.env, homedir()), task, writerAgents: ["memorizer"] }),
   };
 
   return full;

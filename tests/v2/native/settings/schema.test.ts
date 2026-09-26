@@ -96,8 +96,8 @@ describe("設定 JSON Schema", () => {
 
     const completion = defs.completion.properties as Record<string, Schema>;
     expect(Object.keys(completion)).toEqual(Object.keys(DEFAULT_SETTINGS.workflow.completion));
-    expect(completion.requireMemoryReceipt!.default).toBe(
-      DEFAULT_SETTINGS.workflow.completion.requireMemoryReceipt,
+    expect(completion.requireMemoryDisposition!.default).toBe(
+      DEFAULT_SETTINGS.workflow.completion.requireMemoryDisposition,
     );
 
     const verification = defs.verification.properties as Record<string, Schema>;
@@ -129,7 +129,7 @@ describe("設定 JSON Schema", () => {
   test("根層欄位就是 modules / skiller / skills / verification / workflow", () => {
     const rootProperties = (schema.properties ?? {}) as Record<string, Schema>;
     expect(Object.keys(rootProperties).sort()).toEqual(
-      ["$schema", "modules", "skiller", "skills", "verification", "workflow"],
+      ["$schema", "memory", "modules", "skiller", "skills", "verification", "workflow"],
     );
   });
 

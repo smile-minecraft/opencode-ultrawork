@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { assertContainedPath } from "../../../src/kit/path-guard.ts";
 import { resolveCanonicalRoot, resolveCanonicalTarget } from "../../../src/modules/comment-signal/containment.ts";
-import { assertSafeMemoryPath } from "../../../src/modules/memory/paths.ts";
+const assertSafeMemoryPath = assertContainedPath;
 import { assertSafeProjectFile } from "../../../src/modules/workflow/content/content-store.ts";
 
 const roots: string[] = [];

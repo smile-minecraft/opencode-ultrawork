@@ -7,10 +7,8 @@
  *     plan-level inconsistency 彙整，皆由本模組提供。
  *     `validateTaskLinkReferences` / `collectPlanInconsistencies` /
  *     `taskDependsOnPlanSection` / `type LinkInconsistency` 等符號。
- *     收據 extraction 判定只有 memory 模組一份實作（`hasReceiptExtractions`），
- *     本模組不再保留複本，需要時由呼叫端走 memory 模組介面。
  *   - **型別來源**：本檔案內部 structural duplicate 介面
- *     （`Task` / `TasksRegistry` / `ProjectBinding` / `MemoryReceipt` /
+ *     （`Task` / `TasksRegistry` / `ProjectBinding` /
  *     `Plan` / `PlanDependencyGraphEdge` / `PlanDependencyGraphNode`）已
  *     改為從 `../core/types.ts` 以 type-only import 取得，並透過
  *     `export type` re-export 維持 package.json `extractedModules.exports`
@@ -20,7 +18,7 @@
  *
  * 對外規則（不可破壞）：
  *   - TypeScript structural typing：re-export 的 Task / TasksRegistry /
- *     ProjectBinding / MemoryReceipt / Plan / PlanDependencyGraphEdge /
+ *     ProjectBinding / Plan / PlanDependencyGraphEdge /
  *     PlanDependencyGraphNode 與 index.ts 內同名介面結構相同（皆來自
  *     `core/types.ts`），跨模組互相可代入。
  *   - 不可 value-import `core/types.ts`：本檔只需要 type-only 引用；引入反向
@@ -37,7 +35,6 @@ import type {
   Task,
   TasksRegistry,
   ProjectBinding,
-  MemoryReceipt,
   Plan,
   PlanDependencyGraphEdge,
   PlanDependencyGraphNode,
@@ -52,7 +49,6 @@ export type {
   Task,
   TasksRegistry,
   ProjectBinding,
-  MemoryReceipt,
   Plan,
   PlanDependencyGraphEdge,
   PlanDependencyGraphNode,

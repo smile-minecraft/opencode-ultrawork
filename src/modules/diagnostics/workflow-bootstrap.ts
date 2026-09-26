@@ -1,5 +1,5 @@
 /**
- * `workflow_bootstrap`：讀專案記憶（project.md、state.md）大小與游標摘要。
+ * `workflow_bootstrap`：讀專案記憶（memory/MEMORY.md、state.md）大小與游標摘要。
  *
  * 凍結介面（與舊版一致）：
  *   - 名稱 `workflow_bootstrap`；參數 `{ mode?: "minimal" | "full" | "project" | "state" }`。
@@ -19,7 +19,7 @@ import { defineTool } from "../../kit/define-tool.ts";
 import { jsonResult } from "../../kit/json.ts";
 import { FINISHED_PLAN_LIMIT, FINISHED_TASK_LIMIT } from "../workflow/index.ts";
 import type { DiagnosticsDeps } from "./deps.ts";
-import { fileSize, readPlansForDiagnostics, readTasksForDiagnostics } from "./shared.ts";
+import { collectMemoryIndexes, fileSize, readPlansForDiagnostics, readTasksForDiagnostics } from "./shared.ts";
 
 /** bootstrap mode 合法值。 */
 export type WorkflowBootstrapMode = "minimal" | "full" | "project" | "state";
@@ -29,7 +29,7 @@ const REFS = {
   tasks: ".ultrawork/tasks.json",
   plans: ".ultrawork/plans.json",
   state: ".ultrawork/state.md",
-  project: ".ultrawork/project.md",
+  project: ".ultrawork/memory/MEMORY.md",
 } as const;
 
 /** 終態集合；counts 與 currentXxx 的選取都用它。 */
@@ -43,7 +43,7 @@ export function createWorkflowBootstrapTool(deps: DiagnosticsDeps) {
   return defineTool({
     name: "workflow_bootstrap",
     description:
-      "讀取專案記憶（project.md、state.md）並回傳工作階段與任務摘要。預設 minimal 模式只回傳游標摘要，不讀取完整檔案以節省 token；需要診斷時可使用 full、project 或 state 模式。",
+      "讀取專案記憶（memory/MEMORY.md、state.md）並回傳工作階段與任務摘要。預設 minimal 模式只回傳游標摘要，不讀取完整檔案以節省 token；需要診斷時可使用 full、project 或 state 模式。",
     inputSchema: z.object({
       mode: z.enum(["minimal", "full", "project", "state"]).optional(),
     }),
@@ -54,7 +54,7 @@ export function createWorkflowBootstrapTool(deps: DiagnosticsDeps) {
       const { plans } = readPlansForDiagnostics(deps, context);
 
       // 專案記憶檔案大小（不讀全文，避免 token 爆量）
-      const projectMdSize = fileSize(paths.PROJECT_MD);
+      const indexes = collectMemoryIndexes(paths.PROJECT_ROOT, deps.globalConfigDir);
       const stateMdSize = fileSize(paths.STATE_MD);
       const tasksJsonSize = fileSize(paths.TASKS_JSON);
       const plansJsonSize = fileSize(paths.PLANS_JSON);
@@ -89,7 +89,7 @@ export function createWorkflowBootstrapTool(deps: DiagnosticsDeps) {
           memoryDir: paths.MEMORY_DIR,
         },
         l1_summary: {
-          project_md_size: projectMdSize,
+          memory_index_chars: { project: indexes.project.length, global: indexes.global.length },
           state_md_size: stateMdSize,
           tasks_json_size: tasksJsonSize,
           plans_json_size: plansJsonSize,
@@ -126,7 +126,7 @@ export function createWorkflowBootstrapTool(deps: DiagnosticsDeps) {
 
       let hint: string;
       let l1Content:
-        | { project_md: string | null; state_md: string | null; combined_chars: number }
+        | { memory_indexes: Record<"project" | "global", string> | null; state_md: string | null; combined_chars: number }
         | undefined;
 
       if (mode === "minimal") {
@@ -134,10 +134,10 @@ export function createWorkflowBootstrapTool(deps: DiagnosticsDeps) {
       } else {
         const wantProject = mode === "full" || mode === "project";
         const wantState = mode === "full" || mode === "state";
-        const projectMd = wantProject ? readIfExists(paths.PROJECT_MD) : null;
+        const memoryIndexes = wantProject ? indexes : null;
         const stateMd = wantState ? readIfExists(paths.STATE_MD) : null;
-        const combined = (projectMd?.length ?? 0) + (stateMd?.length ?? 0);
-        l1Content = { project_md: projectMd, state_md: stateMd, combined_chars: combined };
+        const combined = (memoryIndexes ? memoryIndexes.project.length + memoryIndexes.global.length : 0) + (stateMd?.length ?? 0);
+        l1Content = { memory_indexes: memoryIndexes, state_md: stateMd, combined_chars: combined };
         hint = `目前模式回傳完整專案記憶（共 ${combined} 字元）。一般工作階段建議使用 minimal 模式。`;
       }
 

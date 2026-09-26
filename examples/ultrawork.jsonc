@@ -39,11 +39,15 @@
     "scopeCheckAllowedAgents": ["build", "ultra"]
   },
 
+  "memory": {
+    "writerAgents": ["memorizer"], // 只允許寫在全域設定
+    "inject": true
+  },
   "workflow": {
     "completion": {
-      // memory 模組開啟時，任務完成前要先有有效的同步紀錄。
+      // memory 模組開啟時，任務完成前要先有有效的記憶處置。
       // memory 關掉時這個值不作用，完成前檢查會自行放行。
-      "requireMemoryReceipt": true
+      "requireMemoryDisposition": true
     },
     "evidencePack": {
       // 派發時強制檢查實作說明七節格式的 subagent 名單。

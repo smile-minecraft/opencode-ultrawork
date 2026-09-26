@@ -30,14 +30,14 @@ describe("設定合併", () => {
   test("專案覆寫優先於全域，物件深層合併", () => {
     const result = loadSettings({
       readFile: reader({
-        "/g/.ultrawork/ultrawork.jsonc": `{"workflow": {"completion": {"requireMemoryReceipt": false}}}`,
+        "/g/.ultrawork/ultrawork.jsonc": `{"workflow": {"completion": {"requireMemoryDisposition": false}}}`,
         "/p/.ultrawork/ultrawork.jsonc": `{"modules": {"search": false}}`,
       }),
       globalDir: "/g",
       projectDir: "/p",
     });
     expect(result.settings.modules.search).toBe(false);
-    expect(result.settings.workflow.completion.requireMemoryReceipt).toBe(false);
+    expect(result.settings.workflow.completion.requireMemoryDisposition).toBe(false);
     expect(result.settings.skills.catalog).toBe(DEFAULT_SETTINGS.skills.catalog);
   });
 

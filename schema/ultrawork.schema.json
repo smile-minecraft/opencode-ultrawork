@@ -28,6 +28,10 @@
     "workflow": {
       "$ref": "#/$defs/workflow",
       "description": "任務與計畫工作流的行為設定。"
+    },
+    "memory": {
+      "$ref": "#/$defs/memory",
+      "description": "兩層記憶的寫入權限與工作階段注入。"
     }
   },
   "additionalProperties": false,
@@ -74,7 +78,7 @@
         "memory": {
           "type": "boolean",
           "default": true,
-          "description": "專案記憶 project.md 與同步紀錄 receipts/ 的 6 個工具。關掉之後 workflow 不再要求同步紀錄。"
+          "description": "兩層記憶的 7 個工具與工作階段索引注入。關掉之後 workflow 不再要求記憶處置。"
         }
       },
       "additionalProperties": false
@@ -124,10 +128,10 @@
     "completion": {
       "type": "object",
       "properties": {
-        "requireMemoryReceipt": {
+        "requireMemoryDisposition": {
           "type": "boolean",
           "default": true,
-          "description": "memory 模組開啟時，任務完成前要先有有效的同步紀錄。memory 關掉時這個值不作用。"
+          "description": "memory 模組開啟時，任務完成前要先有有效的記憶處置（memory-task-close）。memory 關掉時這個值不作用。"
         }
       },
       "additionalProperties": false
@@ -157,6 +161,24 @@
           "type": "array",
           "default": ["implementer", "debugger", "ultra-coder"],
           "description": "派發 subagent 時強制檢查實作說明七節格式的 subagent_type 名單。空陣列代表不再做派發前檢查；清單在模組註冊時快照，改完要重新載入才生效。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "memory": {
+      "type": "object",
+      "description": "兩層記憶的設定。",
+      "properties": {
+        "writerAgents": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": ["memorizer"],
+          "description": "允許寫記憶（memory-extract／memory-write／memory-maintain、recorded 與高風險任務的處置）的 agent 名單。只採用全域層的設定，專案層寫了會被忽略並警告。空陣列代表沒有 agent 能寫記憶，高風險任務將無法結案。"
+        },
+        "inject": {
+          "type": "boolean",
+          "default": true,
+          "description": "每個工作階段開場注入兩層記憶的索引與 pinned 主題（每個工作階段只算一次，之後固定不變）。"
         }
       },
       "additionalProperties": false

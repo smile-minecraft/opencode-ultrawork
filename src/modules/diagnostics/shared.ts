@@ -17,17 +17,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { ultraworkGitignoreHasRequiredLines } from "../../migrate/index.ts";
+import { GLOBAL_MIGRATION_ITEMS, ultraworkGitignoreHasRequiredLines } from "../../migrate/index.ts";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
-import {
-  BOOTSTRAP_FULL_SOFT_BUDGET,
-  PROJECT_MD_HARD_LIMIT,
-  STATE_MD_LIMIT,
-  getProjectMdCurrentSections,
-  getProjectMdNearLimitThreshold,
-  getProjectMdOverLimitHint,
-  resolveProjectMdPolicyFromContent,
-} from "../memory/index.ts";
+import { BOOTSTRAP_FULL_SOFT_BUDGET, STATE_MD_LIMIT } from "../workflow/core/constants.ts";
+import { INDEX_CHAR_LIMIT, LOG_WARN_BYTES, PINNED_LIMIT, TOPIC_CHAR_LIMIT } from "../memory/constants.ts";
+import { memoryLayers, memoryPath, readOptional } from "../memory/layers.ts";
+import { listTopics } from "../memory/topic.ts";
+import { renderIndex } from "../memory/index-render.ts";
+import { readLog, verifyLog, pendingNotes } from "../memory/log.ts";
+import { mismatchedTopics } from "../memory/disposition.ts";
+import { inspectMemoryMigration } from "../../migrate/memory-store.ts";
 import {
   inspectContentRef,
   inspectPlanRegistry,
@@ -52,11 +51,19 @@ export interface CheckItem {
   details: string;
 }
 
-/** 記憶體預算區塊；欄位與舊版 doctor／health_check 逐字一致（外加 V2 補的診斷欄位）。 */
+/** 單一記憶層的預算狀態（企劃書第 12 節）。 */
+export interface LayerBudget {
+  index_chars: number;
+  index_limit: number;
+  topics: number;
+  oversized_topics: string[];
+  pinned: number;
+  status: "ok" | "warn";
+}
+
+/** 記憶體預算區塊：兩層記憶各自的預算，加上 state.md 與 bootstrap 的大小。 */
 export interface MemoryBudget {
-  project_md_size: number;
-  project_md_limit: number;
-  project_md_status: "ok" | "warn";
+  layers: Record<"project" | "global", LayerBudget>;
   state_md_size: number;
   state_md_limit: number;
   state_md_status: "ok" | "warn";
@@ -66,11 +73,6 @@ export interface MemoryBudget {
   missing_content_ref_status: "ok" | "warn";
   registry_projection_divergence: boolean;
   registry_projection_status: "ok" | "warn";
-  project_md_effective_limit: number;
-  project_md_hard_limit: number;
-  project_md_over_by?: number;
-  project_md_current_sections?: ReturnType<typeof getProjectMdCurrentSections>;
-  project_md_hint?: string;
 }
 
 export interface PlanRegistryHealth {
@@ -81,11 +83,13 @@ export interface PlanRegistryHealth {
   issues: PlanRegistryHealthIssue[];
 }
 
+function emptyLayerBudget(): LayerBudget {
+  return { index_chars: 0, index_limit: INDEX_CHAR_LIMIT, topics: 0, oversized_topics: [], pinned: 0, status: "ok" };
+}
+
 export function emptyMemoryBudget(): MemoryBudget {
   return {
-    project_md_size: 0,
-    project_md_limit: PROJECT_MD_HARD_LIMIT,
-    project_md_status: "ok",
+    layers: { project: emptyLayerBudget(), global: emptyLayerBudget() },
     state_md_size: 0,
     state_md_limit: STATE_MD_LIMIT,
     state_md_status: "ok",
@@ -95,8 +99,6 @@ export function emptyMemoryBudget(): MemoryBudget {
     missing_content_ref_status: "ok",
     registry_projection_divergence: false,
     registry_projection_status: "ok",
-    project_md_effective_limit: PROJECT_MD_HARD_LIMIT,
-    project_md_hard_limit: PROJECT_MD_HARD_LIMIT,
   };
 }
 
@@ -109,102 +111,134 @@ export function fileSize(path: string): number {
   return existsSync(path) ? readFileSync(path, "utf-8").length : 0;
 }
 
+/** 兩層記憶的索引全文（由主題重新產生，不信任磁碟上的 MEMORY.md）；沒有主題的層是空字串。 */
+export function collectMemoryIndexes(projectRoot: string, globalRoot: string): Record<"project" | "global", string> {
+  const indexes = { project: "", global: "" };
+  for (const layer of memoryLayers(projectRoot, globalRoot)) {
+    const topics = listTopics(layer);
+    indexes[layer.layer] = topics.length > 0 ? renderIndex(topics, layer.layer) : "";
+  }
+  return indexes;
+}
+
 export interface MemoryBudgetOutcome {
   memory_budget: MemoryBudget;
   warnings: string[];
-  /** project.md frontmatter limit 無效時的錯誤字串（對應 `CONFIGURATION_ERROR`）。 */
-  configurationError?: string;
-  /** project.md 有效上限（frontmatter 收緊後）。 */
-  effectiveProjectLimit: number;
-  projectMdContent: string;
-  projectMdSize: number;
-  stateMdSize: number;
-  /** near-limit 閾值與是否落在區間內，供 l1_check 補提示。 */
-  nearLimitThreshold: number;
-  nearLimitHit: boolean;
+  /** Memory Budget／Store／Log Integrity／Pending Notes／Migration 五項檢查，都是 warn 等級。 */
+  checks: CheckItem[];
 }
 
+/** 未整理筆記超過這個數量就提醒派 memorizer 整理。 */
+const PENDING_NOTES_WARN = 10;
+
 /**
- * 記憶體預算診斷（唯讀）。
+ * 記憶預算與健康診斷（唯讀）。
  *
- * 規則與舊版一致：project.md 走 frontmatter 政策（limit 只能收緊），
- * state.md 固定 3000；bootstrap full 預估 = 兩者長度 + 2048 的 JSON 結構。
+ * 所有項目都是 warn，不影響診斷 ok：預算超標、紀錄斷裂、待遷移都不會讓外掛停擺，
+ * 需要的是派 memorizer 整理。state.md 與 bootstrap 的大小規則與舊版相同。
  */
-export function collectMemoryBudget(paths: Paths): MemoryBudgetOutcome {
+export function collectMemoryBudget(paths: Paths, globalRoot: string = paths.PROJECT_ROOT): MemoryBudgetOutcome {
   const memory_budget = emptyMemoryBudget();
   const warnings: string[] = [];
-  const projectMdExists = existsSync(paths.PROJECT_MD);
-  const projectMdContent = projectMdExists ? readFileSync(paths.PROJECT_MD, "utf-8") : "";
-  const policy = projectMdExists
-    ? resolveProjectMdPolicyFromContent(projectMdContent)
-    : {
-        hardLimit: PROJECT_MD_HARD_LIMIT,
-        effectiveLimit: PROJECT_MD_HARD_LIMIT,
-        rawLimit: undefined as string | undefined,
-        isValid: true,
-        configurationError: undefined as string | undefined,
-      };
-  const effectiveProjectLimit = policy.effectiveLimit;
-  const projectMdSize = projectMdContent.length;
-  const stateMdSize = fileSize(paths.STATE_MD);
+  const checks: CheckItem[] = [];
+  let readable = true;
+  let integrity = true;
+  let pendingNoteCount = 0;
 
-  memory_budget.project_md_size = projectMdSize;
-  memory_budget.project_md_limit = effectiveProjectLimit;
-  memory_budget.project_md_effective_limit = effectiveProjectLimit;
-  memory_budget.project_md_hard_limit = PROJECT_MD_HARD_LIMIT;
-  memory_budget.state_md_size = stateMdSize;
-
-  let configurationError: string | undefined;
-  if (projectMdExists && !policy.isValid) {
-    memory_budget.project_md_status = "warn";
-    configurationError = `project.md 的 frontmatter limit 無效：${policy.configurationError}`;
-    warnings.push(configurationError);
-    warnings.push(
-      `project.md frontmatter 設定錯誤（raw limit: ${policy.rawLimit}），有效上限仍為 hard limit ${PROJECT_MD_HARD_LIMIT}`,
-    );
+  try {
+    for (const layer of memoryLayers(paths.PROJECT_ROOT, globalRoot)) {
+      try {
+        const topics = listTopics(layer);
+        const index = topics.length > 0 ? renderIndex(topics, layer.layer) : "";
+        const oversized = topics.filter((topic) => topic.size > TOPIC_CHAR_LIMIT).map((topic) => topic.topic);
+        const pinned = topics.filter((topic) => topic.frontmatter.pinned).length;
+        const overBudget = index.length > INDEX_CHAR_LIMIT || oversized.length > 0 || pinned > PINNED_LIMIT;
+        memory_budget.layers[layer.layer] = {
+          index_chars: index.length,
+          index_limit: INDEX_CHAR_LIMIT,
+          topics: topics.length,
+          oversized_topics: oversized,
+          pinned,
+          status: overBudget ? "warn" : "ok",
+        };
+        if (overBudget) warnings.push(`${layer.layer} 層記憶超過預算，請派 memorizer 用 memory-maintain report 整理。`);
+        if (topics.length > 0 && readOptional(memoryPath(layer, "MEMORY.md")) !== index) {
+          warnings.push(`${layer.layer} 層的 MEMORY.md 與主題不一致，下一次 memory-write 會重建。`);
+        }
+        const entries = readLog(layer);
+        const layerIntact = verifyLog(entries) && mismatchedTopics(layer, entries, topics.map((topic) => topic.topic)).length === 0;
+        integrity = integrity && layerIntact;
+        pendingNoteCount += pendingNotes(entries).length;
+        if (Buffer.byteLength(readOptional(memoryPath(layer, "log.jsonl")) ?? "") > LOG_WARN_BYTES) {
+          warnings.push(`${layer.layer} 層的 log.jsonl 超過 ${LOG_WARN_BYTES / 1024 / 1024} MB；目前不會自動輪替。`);
+        }
+      } catch {
+        // 讀不到就無法確認紀錄與主題一致，完整性一併視為未通過。
+        readable = false;
+        integrity = false;
+        memory_budget.layers[layer.layer].status = "warn";
+        warnings.push(`${layer.layer} 層的記憶無法安全讀取，請檢查主題格式、權限與符號連結。`);
+      }
+    }
+  } catch {
+    readable = false;
+    integrity = false;
+    warnings.push("記憶根目錄不安全（系統根目錄、家目錄或符號連結），未讀取記憶。");
   }
 
-  if (projectMdSize > effectiveProjectLimit) {
-    memory_budget.project_md_status = "warn";
-    const overBy = projectMdSize - effectiveProjectLimit;
-    const currentSections = getProjectMdCurrentSections(projectMdContent);
-    memory_budget.project_md_over_by = overBy;
-    memory_budget.project_md_current_sections = currentSections;
-    memory_budget.project_md_hint = getProjectMdOverLimitHint(effectiveProjectLimit, overBy, currentSections);
-    warnings.push(
-      `project.md 超過大小上限（${projectMdSize} > ${effectiveProjectLimit}，over by ${overBy}）。bootstrap 的 full 模式會整份讀進來，先精簡它。`,
-    );
-    warnings.push(memory_budget.project_md_hint);
-  }
+  const overBudgetLayers = Object.values(memory_budget.layers).filter((layer) => layer.status === "warn").length;
+  checks.push({
+    name: "Memory Budget",
+    status: overBudgetLayers > 0 ? "warn" : "passed",
+    details: overBudgetLayers > 0
+      ? "有記憶層超過預算，請派 memorizer 用 memory-maintain report 整理。"
+      : "兩層記憶都在預算內。",
+  });
+  checks.push({
+    name: "Memory Store",
+    status: readable ? "passed" : "warn",
+    details: readable ? "兩層記憶都能讀取（還沒有記憶不算失敗）。" : "有記憶層讀取失敗，詳見 warnings。",
+  });
+  checks.push({
+    name: "Memory Log Integrity",
+    status: integrity ? "passed" : "warn",
+    details: integrity
+      ? "記憶紀錄的 hash 鏈完整，主題與最後一筆寫入紀錄一致。"
+      : "紀錄鏈斷裂或主題在工具外被修改，請派 memorizer 用 memory-maintain report 檢查，確認後用 reseal-log。",
+  });
+  checks.push({
+    name: "Memory Pending Notes",
+    status: pendingNoteCount > PENDING_NOTES_WARN ? "warn" : "passed",
+    details: `未整理的筆記 ${pendingNoteCount} 筆${pendingNoteCount > PENDING_NOTES_WARN ? "，請派 memorizer 整理" : ""}。`,
+  });
+  const migration = inspectMemoryMigration(paths.PROJECT_ROOT);
+  checks.push({
+    name: "Memory Migration",
+    status: migration.pending || migration.error ? "warn" : "passed",
+    details:
+      migration.error ??
+      (migration.pending ? "舊的 project.md 還沒遷移，下次啟動或存取記憶時會重試。" : "沒有待遷移的舊記憶。"),
+  });
 
-  if (stateMdSize > STATE_MD_LIMIT) {
+  memory_budget.state_md_size = fileSize(paths.STATE_MD);
+  if (memory_budget.state_md_size > STATE_MD_LIMIT) {
     memory_budget.state_md_status = "warn";
-    warnings.push(
-      `state.md 超過大小上限（${stateMdSize} > ${STATE_MD_LIMIT}）。bootstrap 的 full 模式會整份讀進來，做人工診斷前先精簡它。`,
-    );
+    warnings.push(`state.md 超過大小上限（${memory_budget.state_md_size} > ${STATE_MD_LIMIT}），請精簡游標投影。`);
   }
-
-  const bootstrapFullEstimated = projectMdSize + stateMdSize + 2048;
-  memory_budget.bootstrap_full_estimated_chars = bootstrapFullEstimated;
-  if (bootstrapFullEstimated > BOOTSTRAP_FULL_SOFT_BUDGET) {
+  const indexChars = memory_budget.layers.project.index_chars + memory_budget.layers.global.index_chars;
+  memory_budget.bootstrap_full_estimated_chars = indexChars + memory_budget.state_md_size + 2048;
+  if (memory_budget.bootstrap_full_estimated_chars > BOOTSTRAP_FULL_SOFT_BUDGET) {
     memory_budget.bootstrap_full_status = "warn";
-    warnings.push(
-      `bootstrap 的 full 模式預估會輸出約 ${bootstrapFullEstimated} 字，超過建議上限（${BOOTSTRAP_FULL_SOFT_BUDGET}）。一般工作階段用 mode='minimal' 就好。`,
-    );
+    warnings.push("bootstrap full 模式的預估大小超過建議上限，請改用 minimal 模式。");
   }
+  return { memory_budget, warnings, checks };
+}
 
-  const nearLimitThreshold = getProjectMdNearLimitThreshold(effectiveProjectLimit);
-  return {
-    memory_budget,
-    warnings,
-    configurationError,
-    effectiveProjectLimit,
-    projectMdContent,
-    projectMdSize,
-    stateMdSize,
-    nearLimitThreshold,
-    nearLimitHit: projectMdSize >= nearLimitThreshold && projectMdSize <= effectiveProjectLimit,
-  };
+/** `memory.writerAgents` 為空時，高風險任務無法宣告記憶處置；doctor 與 health_check 共用。 */
+export function memoryWriterConfigCheck(writerAgents: readonly string[]): CheckItem {
+  return writerAgents.length > 0
+    ? { name: "Memory Writer Config", status: "passed", details: `允許寫記憶的 agent：${writerAgents.join("、")}。` }
+    : { name: "Memory Writer Config", status: "warn", details: "memory.writerAgents 是空的，沒有 agent 能寫記憶，高風險任務將無法結案。" };
 }
 
 /** 目前任務：游標優先，退回第一個進行中任務。 */
@@ -601,6 +635,33 @@ function basenameOf(path: string): string {
   return slash === -1 ? path : path.slice(slash + 1);
 }
 
+// ─── 專案層與全域層共用同一個資料夾 ───
+//
+// 在全域設定資料夾本身開工作階段時，專案根目錄就是全域設定資料夾，兩層共用同一個
+// `.ultrawork/`（搬遷標記的分層記錄是同一類問題，見 `src/migrate/marker.ts`）。
+// 這時 `.ultrawork/` 裡同時放著全域層的檔案：它們要不要進版控是使用者的全域政策，
+// 外掛不插手，所以版控衛生檢查不能把它們當成「本機工作流狀態外洩」。
+
+/**
+ * 同資料夾時屬於全域層的 `.ultrawork/` 內路徑（相對於專案根目錄）。
+ *
+ * 全域層的 skiller 資料（清單與搬遷端同一份 `GLOBAL_MIGRATION_ITEMS`）、全域設定檔
+ * `ultrawork.jsonc`（同一份檔案同時是兩層的設定），以及承載使用者全域版控政策的
+ * `.gitignore`。專案層的工作流資料（tasks.json、plans.json…）不在清單裡，照常警告。
+ */
+export const SHARED_GLOBAL_LAYER_ENTRIES: readonly string[] = [
+  ...GLOBAL_MIGRATION_ITEMS.map((item) => item.to),
+  `.ultrawork/${ULTRAWORK_SETTINGS_FILE}`,
+  ".ultrawork/.gitignore",
+];
+
+/** 這個被追蹤的路徑是不是同資料夾時的全域層檔案（目錄項目含底下所有檔案）。 */
+export function isSharedGlobalLayerEntry(trackedPath: string): boolean {
+  return SHARED_GLOBAL_LAYER_ENTRIES.some((entry) => trackedPath === entry || trackedPath.startsWith(`${entry}/`));
+}
+
+export { isSameAsGlobalConfigDir } from "../../settings/paths.ts";
+
 export interface UltraworkGitTrackingHealth {
   /** 被版控追蹤的 `.ultrawork/` 內檔案（相對於專案根目錄）；`null` 代表查不到。 */
   tracked: string[] | null;
@@ -626,3 +687,4 @@ export function collectUltraworkGitTracking(projectRoot: string): UltraworkGitTr
     return { tracked: null, unavailableReason: (error as Error).message };
   }
 }
+

@@ -42,6 +42,7 @@ import {
 import {
   collectContentStoreMarker,
   collectMemoryBudget,
+  memoryWriterConfigCheck,
   collectMissingContentRef,
   collectPlanRegistryHealth,
   collectStateProjectionDivergence,
@@ -192,12 +193,12 @@ export function createWorkflowHealthCheckTool(deps: DiagnosticsDeps) {
         "Memory Module Switch",
         true,
         memoryEnabled
-          ? "memory 模組已啟用（專案記憶與同步紀錄由 memory 模組管理）"
-          : "memory 模組已關閉（project.md 與同步紀錄不由本外掛維護）",
+          ? "memory 模組已啟用（兩層記憶與結案處置由 memory 模組管理）"
+          : "memory 模組已關閉（兩層記憶與結案處置不由本外掛維護）",
       );
       if (!memoryEnabled) {
         warnings.push(
-          "memory 模組已關閉；project.md 與同步紀錄不由本外掛維護，下面的檔案大小檢查可能找不到資料。",
+          "memory 模組已關閉；兩層記憶與結案處置不由本外掛維護，下面的檔案大小檢查可能找不到資料。",
         );
       }
 
@@ -214,21 +215,15 @@ export function createWorkflowHealthCheckTool(deps: DiagnosticsDeps) {
           `註冊檔綁定到 ${registry.projectId}（${registry.projectPath}）`,
         );
       }
-      check("project.md exists", existsSync(join(paths.MEMORY_DIR, "project.md")), paths.PROJECT_MD);
       check("state.md exists", existsSync(join(paths.MEMORY_DIR, "state.md")), paths.STATE_MD);
       check("tasks.json exists", existsSync(paths.TASKS_JSON), paths.TASKS_JSON);
 
       // ── 記憶體預算（與 doctor 共用同一份收集邏輯）──
-      const budget = collectMemoryBudget(paths);
+      const budget = collectMemoryBudget(paths, deps.globalConfigDir);
       result.memory_budget = budget.memory_budget;
       warnings.push(...budget.warnings);
-      if (budget.configurationError) {
-        result.code = "CONFIGURATION_ERROR";
-        resultOk = false;
-      }
-      if (budget.projectMdSize > budget.effectiveProjectLimit) {
-        resultOk = false;
-      }
+      result.checks.push(...budget.checks);
+      result.checks.push(memoryWriterConfigCheck(deps.settings.memory.writerAgents));
 
       if (plansReason) {
         skip("Plan Content Ref Coverage", plansReason);

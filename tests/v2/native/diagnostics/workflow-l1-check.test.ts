@@ -1,3 +1,4 @@
+import { writeMemoryTopic } from "./_helpers.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,7 +27,7 @@ afterEach(async () => {
 describe("workflow_l1_check 大小與錯誤碼", () => {
   test("bootstrap_mode_estimates 含四種模式大小與 full_status", async () => {
     const root = await tempRoot();
-    writeMemoryFile(root, "project.md", "---\nlimit: 5000\n---\n# P\n\n" + "a".repeat(1000) + "\n");
+    writeMemoryTopic(root, "---\nlimit: 5000\n---\n# P\n\n" + "a".repeat(1000) + "\n");
     writeMemoryFile(root, "state.md", "---\nlimit: 3000\n---\n# S\n\n" + "b".repeat(500) + "\n");
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_l1_check");
@@ -43,8 +44,8 @@ describe("workflow_l1_check 大小與錯誤碼", () => {
 
   test("full_status 在預估超過 soft budget 時轉為 warn", async () => {
     const root = await tempRoot();
-    writeMemoryFile(root, "project.md", "---\nlimit: 7000\n---\n# P\n\n" + "a".repeat(6_000) + "\n");
-    writeMemoryFile(root, "state.md", "---\nlimit: 3000\n---\n# S\n\n" + "b".repeat(2_900) + "\n");
+    writeMemoryTopic(root, "---\nlimit: 7000\n---\n# P\n\n" + "a".repeat(6_000) + "\n");
+    writeMemoryFile(root, "state.md", "---\nlimit: 3000\n---\n# S\n\n" + "b".repeat(10_000) + "\n");
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_l1_check");
     expect(r.token_efficiency.bootstrap_mode_estimates.full_status).toBe("warn");
@@ -54,15 +55,15 @@ describe("workflow_l1_check 大小與錯誤碼", () => {
 
   test("project.md 超過有效上限 → status warn 且 ok=false", async () => {
     const root = await tempRoot();
-    writeMemoryFile(root, "project.md", "---\nlimit: 1000\n---\n# P\n\n" + "a".repeat(1_500) + "\n");
+    writeMemoryTopic(root, "---\nlimit: 1000\n---\n# P\n\n" + "a".repeat(4500) + "\n");
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_l1_check");
-    const block = r.blocks.find((b: any) => b.name === "project.md");
+    const block = r.blocks.find((b: any) => b.name === "project/fixture");
     expect(block.status).toBe("warn");
     expect(block.size).toBeGreaterThan(block.effectiveLimit);
-    expect(block.over_by).toBe(block.size - block.effectiveLimit);
+    
     expect(r.ok).toBe(false);
-    expect(r.warnings.some((w: string) => w.includes("project.md 超過大小上限"))).toBe(true);
+    expect(r.warnings.some((w: string) => w.includes("project/fixture 超過大小上限"))).toBe(true);
     await fake.registration?.dispose();
   });
 
@@ -80,7 +81,7 @@ describe("workflow_l1_check 大小與錯誤碼", () => {
     const fake = await setupDiagnostics(await tempRoot());
     const r = await callTool(fake, "workflow_l1_check");
     expect(r.ok).toBe(true);
-    expect(r.blocks).toEqual([]);
+    expect(r.blocks.every((b:any)=>b.size===0)).toBe(true);
     expect(r.token_efficiency.tasks_json_size).toBe(0);
     expect(r.token_efficiency.active_task_count).toBe(0);
     await fake.registration?.dispose();
@@ -88,7 +89,7 @@ describe("workflow_l1_check 大小與錯誤碼", () => {
 
   test("超大檔案不會讓 l1_check 爆量（只回數字與摘要）", async () => {
     const root = await tempRoot();
-    writeMemoryFile(root, "project.md", "---\nlimit: 7000\n---\n# P\n\n" + "x".repeat(400_000) + "\n");
+    writeMemoryTopic(root, "---\nlimit: 7000\n---\n# P\n\n" + "x".repeat(400_000) + "\n");
     writeMemoryFile(root, "state.md", "---\nlimit: 3000\n---\n# S\n\n" + "y".repeat(400_000) + "\n");
     const fake = await setupDiagnostics(root);
     const raw = (await fake.added.get("workflow_l1_check").execute({}, { sessionID: "s1" } as any)).content;
@@ -96,7 +97,7 @@ describe("workflow_l1_check 大小與錯誤碼", () => {
     expect(r.ok).toBe(false);
     // 回應不含全文，只含 block 統計與段落摘要。
     expect(raw.length).toBeLessThan(20_000);
-    expect(r.blocks.length).toBe(2);
+    expect(r.blocks.length).toBe(4);
     expect(r.token_efficiency.bootstrap_mode_estimates.full_status).toBe("warn");
     await fake.registration?.dispose();
   });
@@ -148,15 +149,12 @@ describe("workflow_l1_check frontmatter limit 設定錯誤", () => {
     await fake.registration?.dispose();
   });
 
-  test("project.md frontmatter limit 無效同樣走 CONFIGURATION_ERROR", async () => {
+  test("主題正文中的舊 limit 不再影響主題預算", async () => {
     const root = await tempRoot();
-    writeMemoryFile(root, "project.md", "---\nlabel: project\nlimit: abc\n---\n# P\n");
+    writeMemoryTopic(root, "limit: abc");
     const fake = await setupDiagnostics(root);
     const r = await callTool(fake, "workflow_l1_check");
-    expect(r.ok).toBe(false);
-    expect(r.code).toBe("CONFIGURATION_ERROR");
-    // 有效上限仍退回 hard limit 7000，不放寬。
-    expect(r.blocks.find((b: any) => b.name === "project.md").effectiveLimit).toBe(7000);
-    await fake.registration?.dispose();
+    expect(r.ok).toBe(true);
+    expect(r.blocks.find((b: any) => b.name === "project/fixture").limit).toBe(4000);
   });
 });

@@ -1,9 +1,9 @@
 /**
  * frontmatter 剖析：`parseFrontmatterBlock` 的唯一實作。
  *
- * 專案記憶政策（project-md-policy）與 `workflow_l1_check` 的 `limit` 檢查都
- * 依賴這個解析器。解析規則是凍結介面，與舊版逐字一致，不要順手「改進」：
- * 寬鬆或嚴格一點都會讓既有的 project.md 讀出不同結果。
+ * `workflow_l1_check` 檢查 state.md 等檔案的 frontmatter 時依賴這個解析器。
+ * 解析規則與舊版逐字一致，不要順手「改進」：寬鬆或嚴格一點都會讓既有檔案讀出不同結果。
+ * 記憶主題有自己更嚴格的解析（`topic.ts`），不共用這裡。
  */
 
 function parseArrayLiteral(value: string): string[] {

@@ -37,12 +37,9 @@ export const FINISHED_TASK_LIMIT = 5;
 /** Task history 內保留的最大 transition 筆數（task-state-sync push 後 trim）。 */
 export const TASK_HISTORY_LIMIT = 3;
 
-/** project.md 字符上限。單一來源 7000；具體判定由 project-md-policy 統一。 */
-export const PROJECT_MD_HARD_LIMIT = 7000;
-export const PROJECT_MD_LIMIT = PROJECT_MD_HARD_LIMIT;
+/** state.md 游標投影的字元上限；bootstrap full 模式的建議總量。 */
 export const STATE_MD_LIMIT = 3000;
 export const BOOTSTRAP_FULL_SOFT_BUDGET = 10_000;
-export const PROJECT_MD_NEAR_LIMIT_RATIO = 0.8;
 
 // ─── Plan Registry Constants (v1.0) ─────────────────────────
 
@@ -87,5 +84,3 @@ export const VALID_TRANSITIONS: Record<string, string[]> = {
   CANCELLED: [],
 };
 
-// ─── Receipt Retention  ──────────
-export const RECEIPT_RETENTION_LIMIT = 50;

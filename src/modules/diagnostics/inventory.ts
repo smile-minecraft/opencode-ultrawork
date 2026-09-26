@@ -1,5 +1,5 @@
 /**
- * 凍結介面的單一正式資料：48 個工具、6 個 hook、11 個分類、36 個來源。
+ * 凍結介面的單一正式資料：49 個工具、6 個 hook、11 個分類、41 個來源。
  *
  * 這份表是**對外介面的唯一正式資料**，也是它的比對基準：工具名稱、參數與
  * 回傳格式是這個外掛對呼叫端承諾的介面，改動前要先取得使用者同意。
@@ -23,8 +23,8 @@ export type ToolCategory =
   | "plan_content"
   | "task_content"
   | "workflow"
-  | "memory_receipt"
-  | "project_memory"
+  | "memory_curation"
+  | "memory_query"
   | "comment_signal"
   | "verification"
   | "skill"
@@ -70,10 +70,18 @@ export const HOOK_WIRING_SOURCE: Record<HookName, string> = {
 };
 
 /**
- * 工具名 → 來源檔（V2 實際位置）。36 個來源涵蓋 48 個工具。
+ * 工具名 → 來源檔（V2 實際位置）。41 個來源涵蓋 49 個工具。
  * 單一唯一正式資料：其他位置不得另外維護 tool↔source 對應。
  */
 export const TOOL_SOURCES: Record<string, string> = {
+  "memory-search": "src/modules/memory/tools/memory-search.ts",
+  "memory-read": "src/modules/memory/tools/memory-read.ts",
+  "memory-note": "src/modules/memory/tools/memory-note.ts",
+  "memory-extract": "src/modules/memory/tools/memory-extract.ts",
+  "memory-write": "src/modules/memory/tools/memory-write.ts",
+  "memory-maintain": "src/modules/memory/tools/memory-maintain.ts",
+  "memory-task-close": "src/modules/memory/tools/memory-task-close.ts",
+
   // search
   grep_context: "src/modules/search/grep-context.ts",
   peek_file: "src/modules/search/peek-file.ts",
@@ -118,12 +126,6 @@ export const TOOL_SOURCES: Record<string, string> = {
   "task-content-update": "src/modules/workflow/tools/task-content.ts",
   "work-order-build": "src/modules/workflow/tools/work-order-build.ts",
   // memory
-  "memory-receipt-create": "src/modules/memory/receipts.ts",
-  "memory-receipt-read": "src/modules/memory/receipts.ts",
-  "memory-receipt-list": "src/modules/memory/receipts.ts",
-  "project-memory-read": "src/modules/memory/project-memory.ts",
-  "project-memory-update": "src/modules/memory/project-memory.ts",
-  "project-memory-rewrite": "src/modules/memory/project-memory.ts",
   // diagnostics（自我診斷）
   workflow_bootstrap: "src/modules/diagnostics/workflow-bootstrap.ts",
   workflow_l1_check: "src/modules/diagnostics/workflow-l1-check.ts",
@@ -142,6 +144,14 @@ export const TOOL_SOURCES: Record<string, string> = {
  * 清單鎖住。
  */
 export const TOOL_CATEGORIES: Record<string, ToolCategory> = {
+  "memory-search": "memory_query",
+  "memory-read": "memory_query",
+  "memory-note": "memory_curation",
+  "memory-extract": "memory_curation",
+  "memory-write": "memory_curation",
+  "memory-maintain": "memory_curation",
+  "memory-task-close": "memory_curation",
+
   grep_context: "grep_peek",
   peek_file: "grep_peek",
   "task-state-sync": "task_state",
@@ -160,12 +170,6 @@ export const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   workflow_l1_check: "workflow",
   workflow_doctor: "workflow",
   workflow_health_check: "workflow",
-  "memory-receipt-create": "memory_receipt",
-  "memory-receipt-read": "memory_receipt",
-  "memory-receipt-list": "memory_receipt",
-  "project-memory-read": "project_memory",
-  "project-memory-update": "project_memory",
-  "project-memory-rewrite": "project_memory",
   comment_signal_check: "comment_signal",
   comment_signal_policy: "comment_signal",
   comment_signal_touched_report: "comment_signal",
@@ -219,6 +223,14 @@ export const TOOL_SEMANTIC_CATEGORIES: Record<string, ToolCategory> = {
  * 就會長期回報 tool-set 不一致。
  */
 export const TOOL_MODULES: Record<string, InventoryModuleKey> = {
+  "memory-search": "memory",
+  "memory-read": "memory",
+  "memory-note": "memory",
+  "memory-extract": "memory",
+  "memory-write": "memory",
+  "memory-maintain": "memory",
+  "memory-task-close": "memory",
+
   grep_context: "search",
   peek_file: "search",
   verification_run: "verification",
@@ -255,12 +267,6 @@ export const TOOL_MODULES: Record<string, InventoryModuleKey> = {
   "task-content-read": "workflow",
   "task-content-update": "workflow",
   "work-order-build": "workflow",
-  "memory-receipt-create": "memory",
-  "memory-receipt-read": "memory",
-  "memory-receipt-list": "memory",
-  "project-memory-read": "memory",
-  "project-memory-update": "memory",
-  "project-memory-rewrite": "memory",
   workflow_bootstrap: "diagnostics",
   workflow_l1_check: "diagnostics",
   workflow_doctor: "diagnostics",

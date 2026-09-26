@@ -43,14 +43,18 @@ export function isSelfDiagnostic(toolName: string): boolean {
  * selftest 不應該污染測試 workspace，所以這些明確標 skip 並附原因。
  */
 const SKIP_TOOLS: ReadonlySet<string> = new Set([
-  "project-memory-update",
-  "project-memory-rewrite",
+  // 寫入工具會改檔；extract 與 maintain 需要 writer 身分。
+  "memory-note",
+  "memory-extract",
+  "memory-write",
+  "memory-maintain",
+  "memory-task-close",
+
   "plan-content-create",
   "plan-content-update",
   "plan-content-delete",
   "task-content-create",
   "task-content-update",
-  "memory-receipt-create",
   "comment_signal_baseline",
   "comment_signal_suppress",
 ]);

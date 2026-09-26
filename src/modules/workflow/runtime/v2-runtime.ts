@@ -2,7 +2,9 @@ import type { Plugin } from "@opencode/plugin";
 import type { UltraworkSettings } from "../../../settings/defaults.ts";
 import { isModuleEnabled } from "../../registry.ts";
 import { aggregateCommentSignalGate, describeGateBlock } from "../../comment-signal/completion-gate.ts";
-import { validateReceiptForCompletion } from "../../memory/index.ts";
+import { verifyTaskDisposition } from "../../memory/disposition.ts";
+import { resolveGlobalConfigDir } from "../../../settings/paths.ts";
+import { homedir } from "node:os";
 import type { KeyValueStorage } from "../../../state/store.ts";
 import type { ProjectBinding, Task, TasksRegistry } from "../core/types.ts";
 import { createEmptyTasksRegistryLeaf, normalizeTasksRegistryLeaf } from "../registry/task-registry.ts";
@@ -33,25 +35,12 @@ export function createWorkflowRuntime(
   // 開關一律走 registry 的單一判斷（只有 boolean false 算關）：
   // 直接用 truthy 的話，0／"" 這類非預期值會跟 registry 結論相反。
   const memoryRequired =
-    isModuleEnabled(settings, "memory") && settings.workflow.completion.requireMemoryReceipt;
+    isModuleEnabled(settings, "memory") && settings.workflow.completion.requireMemoryDisposition;
 
-  runtime.memoryReceiptRequired = memoryRequired;
-  runtime.validateMemoryReceiptForTask = (receiptId, task, project, context) => {
-    if (!memoryRequired) {
-      return {
-        ok: true,
-        receipt: {
-          taskId: task.taskId,
-          projectId: project.projectId,
-          projectPath: project.projectPath,
-          status: "disabled",
-          createdAt: new Date().toISOString(),
-          zeroExtractionReason: "memory 模組未啟用",
-        },
-      };
-    }
-    const root = runtime.resolveProjectRoot(context);
-    return validateReceiptForCompletion(root, receiptId, { taskId: task.taskId }, project);
+  runtime.memoryDispositionRequired = memoryRequired;
+  runtime.validateMemoryDispositionForTask = (task, project, context) => {
+    const options = (ctx.options ?? {}) as Record<string, unknown>;
+    return verifyTaskDisposition({ projectRoot: runtime.resolveProjectRoot(context), globalMemoryRoot: typeof options.globalDir === "string" ? options.globalDir : resolveGlobalConfigDir(process.env, homedir()), task, writerAgents: settings.memory.writerAgents });
   };
 
   runtime.validateCommentSignalForCompletion = async (sessionID) => {

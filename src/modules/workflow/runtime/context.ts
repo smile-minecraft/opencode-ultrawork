@@ -17,8 +17,8 @@
  *     symlink 解析後的真實路徑套用同一份黑名單）。家目錄入列是使用者裁定；
  *     這裡只轉匯出，不再自帶黑名單。
  *   - `getPathsForRoot(projectRoot)` 對根目錄的 layout
- *     （`.ultrawork/{project.md, state.md, tasks.json, plans.json,
- *     receipts/}` 與 `.ultrawork/plans/`）必須與原 closure 版本完全相同，
+ *     （`.ultrawork/{memory/, state.md, tasks.json, plans.json,
+ *     memory/}` 與 `.ultrawork/plans/`）必須與原 closure 版本完全相同，
  *     因為 `lazyEnsure` / `readRegistry` / `writeRegistry` 等都依賴這些
  *     相對位置。
  *
@@ -48,11 +48,10 @@ export interface Paths {
   PROJECT_ID: string;
   OPENCODE_DIR: string;
   MEMORY_DIR: string;
-  PROJECT_MD: string;
+  MEMORY_STORE_DIR: string;
   STATE_MD: string;
   TASKS_JSON: string;
   PLANS_JSON: string;
-  RECEIPTS_DIR: string;
   PLANS_DIR: string;
   /**
    * 稽核紀錄（v4.2）：只增不改的 JSON Lines 檔。
@@ -67,19 +66,18 @@ export interface Paths {
  *
  * 任何既有 caller（`getPaths` / `readRegistry` / `writeRegistry` /
  * `readPlansRegistry` / `writePlansRegistry` / `updateStateMd` /
- * `lazyEnsure` / `validateMemoryReceiptForTask` / 多個 plan / task content
+ * `lazyEnsure` / `validateMemoryDispositionForTask` / 多個 plan / task content
  * tool）皆解構此回傳形狀。
  */
 export function getPathsForRoot(projectRoot: string): Paths {
   const PROJECT_ROOT = resolve(projectRoot);
   const PROJECT_ID = deriveProjectId(PROJECT_ROOT);
   const MEMORY_DIR = join(PROJECT_ROOT, ".ultrawork");
-  const PROJECT_MD = join(MEMORY_DIR, "project.md");
+  const MEMORY_STORE_DIR = join(MEMORY_DIR, "memory");
   const STATE_MD = join(MEMORY_DIR, "state.md");
   const TASKS_JSON = join(MEMORY_DIR, "tasks.json");
   const PLANS_JSON = join(MEMORY_DIR, "plans.json");
-  const RECEIPTS_DIR = join(MEMORY_DIR, "receipts");
   const AUDIT_LOG = join(MEMORY_DIR, "audit.jsonl");
   const PLANS_DIR = join(MEMORY_DIR, "plans");
-  return { PROJECT_ROOT, PROJECT_ID, OPENCODE_DIR: MEMORY_DIR, MEMORY_DIR, PROJECT_MD, STATE_MD, TASKS_JSON, PLANS_JSON, RECEIPTS_DIR, PLANS_DIR, AUDIT_LOG };
+  return { PROJECT_ROOT, PROJECT_ID, OPENCODE_DIR: MEMORY_DIR, MEMORY_DIR, MEMORY_STORE_DIR, STATE_MD, TASKS_JSON, PLANS_JSON, PLANS_DIR, AUDIT_LOG };
 }

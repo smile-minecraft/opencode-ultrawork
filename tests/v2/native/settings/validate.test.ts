@@ -90,7 +90,7 @@ describe("模組開關單一語意：只有 boolean false 是關", () => {
   test("workflow 的 memory／commentSignal 開關與 registry 一致", async () => {
     const fake = createFakeV2Context({ directory: "/work/project" });
     const runtime = createWorkflowRuntime(fake.ctx, badSwitchSettings());
-    expect(runtime.memoryReceiptRequired).toBe(true);
+    expect(runtime.memoryDispositionRequired).toBe(true);
     const commentSignal = await runtime.validateCommentSignalForCompletion("s1");
     expect(commentSignal.ok).toBe(true);
     if (commentSignal.ok) expect(commentSignal.status).not.toBe("disabled");

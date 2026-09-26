@@ -122,7 +122,7 @@ describe("ultrawork_selftest 略過行為", () => {
   test("會寫檔的工具標 skipped 並附原因（SKIP_TOOLS 真的生效）", async () => {
     const fake = await setupDiagnostics(await tempRoot());
     const r = await callTool(fake, "ultrawork_selftest", {
-      toolNames: ["task-content-update", "project-memory-update", "memory-receipt-create"],
+      toolNames: ["task-content-update", "memory-write", "memory-note"],
     });
     const items = r.results.filter((x: any) => x.tool !== undefined && x.status === "skip" && x.error?.includes("會寫入檔案"));
     expect(items.length).toBe(3);

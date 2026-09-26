@@ -582,3 +582,53 @@ describe("50 - V2 序列項目之間的空行", () => {
     expect(removeAgentSkillLine(raw, "personal-*").status).toBe("removed");
   });
 });
+
+describe("50 - 值帶空白的規則（shell 指令）", () => {
+  const SHELL_ITEMS = [
+    `  - action: shell`,
+    `    resource: git status *`,
+    `    effect: allow`,
+    `  - action: shell`,
+    `    resource: "git push *"`,
+    `    effect: ask`,
+  ];
+
+  test("shell 規則的 resource 帶空白時，整份仍可插入 skill 項目", () => {
+    const raw = v2AgentContent([...SHELL_ITEMS, ...V2_STANDARD_ITEMS]);
+    const r = insertAgentSkillAllow(raw, "subject-skill");
+    expect(r.status).toBe("inserted");
+    expect(r.content).toBe(
+      v2AgentContent([...SHELL_ITEMS, ...V2_STANDARD_ITEMS, `  - action: skill`, `    resource: subject-skill`, `    effect: allow`]),
+    );
+    expect(parseFrontmatter(r.content!).ok).toBe(true);
+  });
+
+  test("shell 規則在 skill 規則之後、以及位在項目第一行時同樣可解析", () => {
+    const raw = v2AgentContent([
+      ...V2_STANDARD_ITEMS,
+      `  - resource: git log *`,
+      `    action: shell`,
+      `    effect: allow`,
+      `  - action: skill`,
+      `    resource: subject-skill`,
+      `    effect: allow`,
+    ]);
+    const r = removeAgentSkillLine(raw, "subject-skill");
+    expect(r.status).toBe("removed");
+    expect(r.content).toBe(
+      v2AgentContent([...V2_STANDARD_ITEMS, `  - resource: git log *`, `    action: shell`, `    effect: allow`]),
+    );
+  });
+
+  test("帶空白但會被 YAML 讀成註解、巢狀映射或破損引號的值一律 malformed", () => {
+    for (const resource of [`git status # note`, `git: status`, `git status:`, `"git status *`, `"git" "status"`]) {
+      const raw = v2AgentContent([
+        `  - action: shell`,
+        `    resource: ${resource}`,
+        `    effect: allow`,
+        ...V2_STANDARD_ITEMS,
+      ]);
+      expect(insertAgentSkillAllow(raw, "subject-skill").status).toBe("malformed");
+    }
+  });
+});

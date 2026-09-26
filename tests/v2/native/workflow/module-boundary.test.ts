@@ -47,24 +47,17 @@ describe("模組邊界與收據 validator 單一來源", () => {
     expect(existsSync(join(WORKFLOW, "runtime", "receipt-validator.ts"))).toBe(false);
   });
 
-  test("workflow／diagnostics 引用 memory 只走 memory/index.ts", async () => {
-    const files = [...(await sourceFiles(WORKFLOW)), ...(await sourceFiles(DIAGNOSTICS))];
-    const violations: string[] = [];
-    for (const file of files) {
-      const source = await readFile(file, "utf8");
-      for (const specifier of importSpecifiers(source)) {
-        if (specifier.includes("memory/") && !specifier.endsWith("memory/index.ts")) {
-          violations.push(`${relative(file)} → ${specifier}`);
-        }
-      }
+  test("memory 葉節點不得反向依賴 workflow", async () => {
+    for (const name of ["disposition", "log", "topic", "layers"]) {
+      const source=await readFile(join(ROOT,"src/modules/memory",`${name}.ts`),"utf8");
+      expect(importSpecifiers(source).filter(s=>s.includes("workflow"))).toEqual([]);
     }
-    expect(violations).toEqual([]);
   });
 
   test("createRuntimeContext 的收據驗證委派給 memory，不再自建 validator", async () => {
     const source = await readFile(join(WORKFLOW, "runtime", "context-builder.ts"), "utf8");
     expect(source).not.toContain("createReceiptValidator");
     expect(source).not.toContain("./receipt-validator");
-    expect(source).toContain("validateReceiptForCompletion");
+    expect(source).toContain("verifyTaskDisposition");
   });
 });

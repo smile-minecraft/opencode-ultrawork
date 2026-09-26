@@ -41,6 +41,7 @@ export interface Task {
   planRef?: string;
   specRef?: string;
   indexRef?: string;
+  archivingAt?: string;
   updatedAt: string;
   history: string[];
   // Plan system fields (v4.0)
@@ -119,26 +120,7 @@ export interface ProjectBinding {
   projectPath: string;
 }
 
-export interface MemoryReceipt {
-  memoryReceiptId?: string;
-  taskId: string;
-  projectId: string;
-  projectPath: string;
-  status: string;
-  createdAt: string;
-  extractionResults?: unknown[];
-  extractions?: unknown[];
-  createdCards?: unknown[];
-  updatedCards?: unknown[];
-  zeroExtractionReason?: string;
-  /**
-   * 稽核欄位（v4.2）：與完成註記同樣的用途，覆蓋沒有關聯計畫的獨立任務。
-   * 收據保留 50 筆，比任務本體的 5 筆長很多。純 pass-through，
-   * `receipt-validator.ts` 的檢查清單不因這兩個欄位改變。
-   */
-  risk?: string;
-  reviewVerdict?: string;
-}
+
 
 // ─── Plan Registry (v1.0) ───────────────────────────────────
 

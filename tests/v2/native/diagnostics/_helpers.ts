@@ -1,3 +1,7 @@
+import { renderTopic, listTopics, sha256 } from "../../../../src/modules/memory/topic.ts";
+import { memoryLayer, memoryPath } from "../../../../src/modules/memory/layers.ts";
+import { renderIndex } from "../../../../src/modules/memory/index-render.ts";
+import { entryHash } from "../../../../src/modules/memory/log.ts";
 /**
  * diagnostics 測試的共用 harness。
  *
@@ -25,6 +29,8 @@ export interface SetupDiagnosticsOptions {
    * 開啟 commentSignal 的測試就必須真的把 `commentSignalModule` 一起註冊。
    */
   extraModules?: readonly ModuleDefinition[];
+  /** 全域設定資料夾（`ctx.options.globalDir`）；不給就用 fake context 的隔離暫存目錄。 */
+  globalDir?: string;
 }
 
 export async function setupDiagnostics(
@@ -36,6 +42,7 @@ export async function setupDiagnostics(
     directory: root,
     sessionDirectory: root,
     tools: options.tools ?? [],
+    ...(options.globalDir !== undefined ? { options: { globalDir: options.globalDir } } : {}),
   });
   const runtime: ModuleRuntime = { ctx: fake.ctx, settings };
   const modules: ModuleDefinition[] = [diagnosticsModule, ...(options.extraModules ?? [])];
@@ -238,11 +245,7 @@ export function diagnosticsOnlySettings(...alsoEnabled: string[]): UltraworkSett
  */
 export function writeMinimalWorkspace(root: string): void {
   makePlansDir(root);
-  writeMemoryFile(
-    root,
-    "project.md",
-    "---\ndescription: ''\nlabel: project\nlimit: 7000\nread_only: false\n---\n\n# Project Overview\n\n",
-  );
+  writeMemoryTopic(root, "專案測試知識");
   writeMemoryFile(
     root,
     "state.md",
@@ -282,4 +285,32 @@ export function fileSnapshot(root: string): string[] {
   };
   walk(root, "");
   return out.sort();
+}
+
+/**
+ * 寫一個專案層記憶主題，連同索引與一筆 reseal 紀錄：
+ * 讓 doctor 的紀錄完整性檢查把這個 fixture 視為「經由工具寫入」的正常狀態。
+ */
+export function writeMemoryTopic(root: string, body: string, description = "測試主題", topic = "fixture"): string {
+  const layer = memoryLayer(root);
+  mkdirSync(memoryPath(layer, "topics"), { recursive: true });
+  const at = new Date().toISOString();
+  const raw = renderTopic(
+    { title: topic, description, type: "reference", pinned: false, source: "manual", created: at, updated: at, verified_at: at },
+    body,
+  );
+  writeFileSync(memoryPath(layer, "topics", `${topic}.md`), raw);
+  writeFileSync(memoryPath(layer, "MEMORY.md"), renderIndex(listTopics(layer), layer.layer));
+  const entry = {
+    seq: 1,
+    at,
+    kind: "reseal" as const,
+    agent: "memorizer",
+    sessionID: null,
+    prevHash: "genesis",
+    reason: "測試初始快照",
+    shas: Object.fromEntries(listTopics(layer).map((item) => [item.topic, item.sha256])),
+  };
+  writeFileSync(memoryPath(layer, "log.jsonl"), `${JSON.stringify({ ...entry, hash: entryHash(entry) })}\n`);
+  return raw;
 }

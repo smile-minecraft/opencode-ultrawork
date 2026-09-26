@@ -18,17 +18,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { defineTool } from "../../kit/define-tool.ts";
 import { jsonResult } from "../../kit/json.ts";
-import {
-  BOOTSTRAP_FULL_SOFT_BUDGET,
-  PROJECT_MD_HARD_LIMIT,
-  STATE_MD_LIMIT,
-  getProjectMdCurrentSections,
-  getProjectMdNearLimitThreshold,
-  getProjectMdOverLimitHint,
-  parseFrontmatterBlock,
-  resolveProjectMdPolicyFromContent,
-  splitFrontmatter,
-} from "../memory/index.ts";
+import { BOOTSTRAP_FULL_SOFT_BUDGET, STATE_MD_LIMIT } from "../workflow/core/constants.ts";
+import { INDEX_CHAR_LIMIT, TOPIC_CHAR_LIMIT } from "../memory/constants.ts";
+import { memoryLayers } from "../memory/layers.ts";
+import { listTopics } from "../memory/topic.ts";
+import { renderIndex } from "../memory/index-render.ts";
+import { parseFrontmatterBlock } from "../memory/frontmatter.ts";
+import { splitFrontmatter } from "../memory/helpers.ts";
 import type { DiagnosticsDeps } from "./deps.ts";
 import { fileSize, readPlansForDiagnostics, readTasksForDiagnostics } from "./shared.ts";
 
@@ -41,7 +37,6 @@ interface L1Block {
   status: string;
   suggestion: string;
   over_by?: number;
-  current_sections?: ReturnType<typeof getProjectMdCurrentSections>;
   hint?: string;
 }
 
@@ -69,23 +64,7 @@ export function createWorkflowL1CheckTool(deps: DiagnosticsDeps) {
         const content = readFileSync(path, "utf-8");
         let effectiveLimit = defaultLimit;
         let hardLimit = defaultLimit;
-        if (name === "project.md") {
-          // project.md 走 memory 模組的 frontmatter 政策（limit 只能收緊）。
-          const policy = resolveProjectMdPolicyFromContent(content);
-          hardLimit = policy.hardLimit;
-          if (!policy.isValid) {
-            configurationErrors.push(policy.configurationError!);
-            report.warnings.push(
-              `project.md 的 frontmatter limit 無效（${policy.rawLimit ?? "unknown"}）：${policy.configurationError}`,
-            );
-            report.suggestions.push(
-              `把 project.md 的 limit frontmatter 改成一個 1..${hardLimit} 的正整數（不能超過 hard limit ${hardLimit}）。`,
-            );
-            effectiveLimit = policy.effectiveLimit;
-          } else {
-            effectiveLimit = policy.effectiveLimit;
-          }
-        } else {
+        {
           const { frontmatter } = splitFrontmatter(content);
           if (frontmatter) {
             const fm = parseFrontmatterBlock(frontmatter);
@@ -127,24 +106,43 @@ export function createWorkflowL1CheckTool(deps: DiagnosticsDeps) {
           status: size > effectiveLimit ? "warn" : "ok",
           suggestion: size > effectiveLimit ? `把 ${name} 精簡到 ${effectiveLimit} 字以內。` : "無",
         };
-        if (name === "project.md" && size > effectiveLimit) {
-          const overBy = size - effectiveLimit;
-          const currentSections = getProjectMdCurrentSections(content);
-          block.over_by = overBy;
-          block.current_sections = currentSections;
-          block.hint = getProjectMdOverLimitHint(effectiveLimit, overBy, currentSections);
-        }
         report.blocks.push(block);
         if (size > effectiveLimit) {
           report.ok = false;
           report.warnings.push(`${name} 超過大小上限（${size} > ${effectiveLimit}）`);
-          if (name === "project.md") {
-            report.warnings.push(block.hint!);
-          }
         }
       };
 
-      checkFile("project.md", paths.PROJECT_MD, PROJECT_MD_HARD_LIMIT);
+      // 記憶改成兩層主題之後，逐層檢查索引與每個主題的大小；上限見 memory/constants.ts。
+      // 超過上限時 ok=false，與舊版 project.md 超限的判定一致（l1_check 本來就是大小檢查）。
+      let memoryIndexSize = 0;
+      const checkMemoryItem = (name: string, size: number, limit: number) => {
+        const exceeded = size > limit;
+        report.blocks.push({
+          name,
+          size,
+          limit,
+          effectiveLimit: limit,
+          hardLimit: limit,
+          status: exceeded ? "warn" : "ok",
+          suggestion: exceeded ? "請派 memorizer 拆分主題或精簡 description。" : "無",
+        });
+        if (exceeded) {
+          report.ok = false;
+          report.warnings.push(`${name} 超過大小上限（${size} > ${limit}）`);
+        }
+      };
+      try {
+        for (const layer of memoryLayers(paths.PROJECT_ROOT, deps.globalConfigDir)) {
+          const topics = listTopics(layer);
+          const index = topics.length > 0 ? renderIndex(topics, layer.layer) : "";
+          memoryIndexSize += index.length;
+          checkMemoryItem(`${layer.layer}/MEMORY.md`, index.length, INDEX_CHAR_LIMIT);
+          for (const topic of topics) checkMemoryItem(`${layer.layer}/${topic.topic}`, topic.size, TOPIC_CHAR_LIMIT);
+        }
+      } catch {
+        report.warnings.push("記憶無法安全讀取（根目錄不安全、符號連結或主題格式錯誤），未檢查記憶大小；請執行 workflow_doctor 查看細節。");
+      }
       checkFile("state.md", paths.STATE_MD, STATE_MD_LIMIT);
 
       if (configurationErrors.length > 0) {
@@ -154,7 +152,6 @@ export function createWorkflowL1CheckTool(deps: DiagnosticsDeps) {
       }
 
       // Token 效率診斷：bootstrap 四種模式的預估輸出大小。
-      const projectMdSize = fileSize(paths.PROJECT_MD);
       const stateMdSize = fileSize(paths.STATE_MD);
       const tasksJsonSize = fileSize(paths.TASKS_JSON);
       const plansJsonSize = fileSize(paths.PLANS_JSON);
@@ -170,9 +167,9 @@ export function createWorkflowL1CheckTool(deps: DiagnosticsDeps) {
 
       // minimal = 0 專案記憶內容（純 cursor summary，< 2KB 結構）
       const minimalChars = 1536;
-      const projectChars = projectMdSize + 1536;
+      const projectChars = memoryIndexSize + 1536;
       const stateChars = stateMdSize + 1536;
-      const fullChars = projectMdSize + stateMdSize + 2048;
+      const fullChars = memoryIndexSize + stateMdSize + 2048;
       const fullStatus = fullChars > BOOTSTRAP_FULL_SOFT_BUDGET ? "warn" : "ok";
 
       report.token_efficiency = {
@@ -198,19 +195,6 @@ export function createWorkflowL1CheckTool(deps: DiagnosticsDeps) {
           `state.md 偏大（${stateMdSize} 字）。可以拿掉 Ready/Blocked 的預覽，或精簡最近完成的項目。`,
         );
         report.suggestions.push("縮小 runtime.updateStateMd() 的預覽大小，或在寫入前移除非進行中的任務。");
-      }
-      {
-        const projContent = existsSync(paths.PROJECT_MD) ? readFileSync(paths.PROJECT_MD, "utf-8") : "";
-        const effectiveProjectLimit = projContent
-          ? resolveProjectMdPolicyFromContent(projContent).effectiveLimit
-          : PROJECT_MD_HARD_LIMIT;
-        const nearThreshold = getProjectMdNearLimitThreshold(effectiveProjectLimit);
-        if (projectMdSize >= nearThreshold && projectMdSize <= effectiveProjectLimit) {
-          report.warnings.push(
-            `project.md 快到大小上限了（${projectMdSize}/${effectiveProjectLimit}，閾值 ${nearThreshold}）。bootstrap 的 full 模式成本會很高。`,
-          );
-          report.suggestions.push("精簡 project.md 的歷史段落，或把冗長的規則移到 .ultrawork/plans/ 的內容檔。");
-        }
       }
       if (fullStatus === "warn") {
         report.warnings.push(

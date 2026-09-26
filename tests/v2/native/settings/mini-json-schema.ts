@@ -48,6 +48,8 @@ const KEYWORD_SHAPES: Record<string, KeywordShape> = {
   additionalProperties: "boolean",
   $defs: "schemaMap",
   properties: "schemaMap",
+  items: "schema",
+  minLength: "annotation",
 };
 
 /** JSON Schema 的 `type` 對應的 JS typeof；object / array 另處理。 */
@@ -163,6 +165,8 @@ export function validate(
       errors.push(`${pointer} 只能是 ${allowed.join(" | ")}，實際是 ${JSON.stringify(value)}`);
     }
   }
+  if (typeof value === "string" && typeof schema.minLength === "number" && [...value].length < schema.minLength) errors.push(`${pointer} 字串太短`);
+  if (Array.isArray(value) && schema.items && typeof schema.items === "object" && !Array.isArray(schema.items)) value.forEach((item,index)=>errors.push(...validate(item,schema.items as Schema,root,`${pointer}/${index}`)));
   if (JS_TYPE_OF.object!(value)) {
     validateObject(value as Record<string, JsonValue>, schema, root, pointer, errors);
   }

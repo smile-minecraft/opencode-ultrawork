@@ -4,7 +4,7 @@
  * 角色：
  *     函式為 runtime module-level 函式，附掛於 `UltraworkRuntimeContext`：
  *       · `ensureDir(path, context?)`：不安全 root 短路後 `mkdir -p`。
- *       · `lazyEnsure(context?)`：首次讀/寫時建立 `project.md` / `state.md`
+ *       · `lazyEnsure(context?)`：首次讀/寫時建立 `state.md`
  *         / `tasks.json` 等 專案記憶 檔。
  *       · `readRegistry(context?, createIfMissing?)` / `writeRegistry(registry, context?)`
  *       · `readPlansRegistry(context?, createIfMissing?)` / `writePlansRegistry(registry, context?)`
@@ -47,7 +47,6 @@ import { restoreBytesAtomic } from "../content/byte-restore.ts";
 import { assertSafeContentPath, assertSafeProjectFile } from "../content/content-store.ts";
 import { pathIdentityKey, samePathIdentity } from "../content/path-identity.ts";
 import { isFinishedPlanState, isFinishedTaskState } from "../core/helpers.ts";
-import { PROJECT_MD_HARD_LIMIT } from "../core/constants.ts";
 import {
   createEmptyPlansRegistry,
   normalizePlansRegistry,
@@ -189,8 +188,7 @@ export function createRegistryIO(
    *
    * 與 closure 原版本行為一致：
    *   - 不安全 root 短路（靜默 log 並返回）
-   *   - `ensureDir(MEMORY_DIR)` 與 `ensureDir(RECEIPTS_DIR)`
-   *   - 若 `project.md` 不存在則寫入空白 project skeleton
+   *   - `ensureDir(MEMORY_DIR)`
    *   - 若 `state.md` 不存在則寫入 idle cursor projection skeleton
    *   - 若 `tasks.json` 不存在則寫入空 TasksRegistry
    *     （透過 `runtime.createEmptyTasksRegistry(getCurrentProject(context))`
@@ -205,16 +203,10 @@ export function createRegistryIO(
       runtime.debugLog(`lazyEnsure skipped: unsafe root ${root}`);
       return;
     }
-    const { MEMORY_DIR, PROJECT_MD, STATE_MD, TASKS_JSON, RECEIPTS_DIR, PLANS_DIR } = runtime.getPaths(context);
+    const { MEMORY_DIR, STATE_MD, TASKS_JSON, PLANS_DIR } = runtime.getPaths(context);
     try {
       assertSafeProjectFile(root, PLANS_DIR, MEMORY_DIR);
       ensureDir(MEMORY_DIR, context);
-      assertSafeProjectFile(root, PLANS_DIR, RECEIPTS_DIR);
-      ensureDir(RECEIPTS_DIR, context);
-      assertSafeProjectFile(root, PLANS_DIR, PROJECT_MD);
-      if (!existsSync(PROJECT_MD)) {
-        writeFileSync(PROJECT_MD, `---\ndescription: ''\nlabel: project\nlimit: ${PROJECT_MD_HARD_LIMIT}\nread_only: false\n---\n\n# Project Overview\n\n`, "utf-8");
-      }
       assertSafeProjectFile(root, PLANS_DIR, STATE_MD);
       if (!existsSync(STATE_MD)) {
         // Idle cursor projection — 對齊 updateStateMd() 格式，不含完整 active task dashboard。

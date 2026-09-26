@@ -65,7 +65,7 @@ export interface AuditEntry {
   risk?: string;
   reviewVerdict?: string;
   staleReview?: boolean;
-  memoryReceiptId?: string;
+  memoryDisposition?: { outcome: string | undefined; seq: number };
 }
 
 /** 提供寫入所需的最小 runtime 介面，避免與完整的 context 型別耦合。 */

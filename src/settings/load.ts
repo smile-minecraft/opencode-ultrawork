@@ -104,7 +104,7 @@ export function loadSettings(input: LoadSettingsInput = {}): SettingsLoadResult 
     if (text === undefined) continue;
     try {
       const parsed: unknown = parseJsonc(text);
-      settings = mergeSettings(settings, layer.project ? stripProjectSkillerRoots(parsed, layer.path, warnings) : parsed);
+      settings = mergeSettings(settings, layer.project ? stripProjectMemoryWriters(stripProjectSkillerRoots(parsed, layer.path, warnings), layer.path, warnings) : parsed);
     } catch (error) {
       // 只忽略壞掉的這一層：前面已套用的層保留，不重置。
       warnings.push(`設定檔 ${layer.path} 解析失敗，已忽略該層：${error instanceof Error ? error.message : String(error)}`);
@@ -114,4 +114,21 @@ export function loadSettings(input: LoadSettingsInput = {}): SettingsLoadResult 
   const sanitized = sanitizeSettings(settings);
   warnings.push(...sanitized.warnings);
   return { settings: sanitized.settings, warnings };
+}
+
+/**
+ * `memory.writerAgents` 決定誰能寫全域記憶，只允許寫在全域層（理由同 skiller 的寫入位置）：
+ * 專案層有這個 key 就拿掉並警告；`memory` 不是物件時整段忽略。
+ */
+function stripProjectMemoryWriters(layer: unknown, path: string, warnings: string[]): unknown {
+  if (!isPlainObject(layer) || layer.memory === undefined) return layer;
+  if (!isPlainObject(layer.memory)) {
+    warnings.push(`設定檔 ${path} 的 memory 必須是物件，專案層的整個 memory 區段已忽略。`);
+    const { memory: _memory, ...rest } = layer;
+    return rest;
+  }
+  if (layer.memory.writerAgents === undefined) return layer;
+  warnings.push(`設定檔 ${path} 的 memory.writerAgents 只允許寫在全域設定，專案層的值已忽略。`);
+  const { writerAgents: _writerAgents, ...memory } = layer.memory;
+  return { ...layer, memory };
 }

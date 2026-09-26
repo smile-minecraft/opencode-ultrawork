@@ -4,15 +4,11 @@
  * 角色：
  *   - `lineFenceState(lines)`：回傳 per-line boolean mask，標示該行是否位於
  *     fenced code block 內。供 heading / section marker 掃描避開 fenced 範例。
- *   - 由 `tools/project-memory.ts`（`duplicateH2Headings` / `hasNonFenceH1`）與
- *     `content/section-parser.ts`（section 邊界判定）共用，避免各自維護一份
- *     fence 判定而漂移。
+ *   - 供 section 邊界判定等 heading 掃描共用，避免各自維護一份 fence 判定而漂移。
  *
  * 對外規則（不可破壞）：
  *   - 純函式 / pure module，僅依賴字串處理，不引入 IO 或 runtime helper。
- *   - 行為與原 `project-memory.ts` 內 inline 版本逐字一致。
  *
- * @see ../memory/project-memory.ts
  * @see ./section-parser.ts
  */
 

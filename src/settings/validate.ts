@@ -162,21 +162,22 @@ function sanitizeWorkflow(raw: unknown, warnings: string[]): UltraworkSettings["
     if (!isPlainObject(completion)) {
       warnInvalidType(warnings, "workflow.completion", completion, DEFAULT_SETTINGS.workflow.completion);
     } else {
-      const requireMemoryReceipt = completion["requireMemoryReceipt"];
-      if (requireMemoryReceipt !== undefined) {
-        if (typeof requireMemoryReceipt !== "boolean") {
+      const requireMemoryDisposition = completion["requireMemoryDisposition"];
+      if (requireMemoryDisposition !== undefined) {
+        if (typeof requireMemoryDisposition !== "boolean") {
           warnInvalidType(
             warnings,
-            "workflow.completion.requireMemoryReceipt",
-            requireMemoryReceipt,
-            DEFAULT_SETTINGS.workflow.completion.requireMemoryReceipt,
+            "workflow.completion.requireMemoryDisposition",
+            requireMemoryDisposition,
+            DEFAULT_SETTINGS.workflow.completion.requireMemoryDisposition,
           );
         } else {
-          workflow.completion.requireMemoryReceipt = requireMemoryReceipt;
+          workflow.completion.requireMemoryDisposition = requireMemoryDisposition;
         }
       }
       for (const key of Object.keys(completion)) {
-        if (key !== "requireMemoryReceipt") warnUnknownKey(warnings, "workflow.completion", key);
+        if (key === "requireMemoryReceipt") warnings.push("requireMemoryReceipt 已改名為 requireMemoryDisposition，舊值已忽略。");
+        else if (key !== "requireMemoryDisposition") warnUnknownKey(warnings, "workflow.completion", key);
       }
     }
   }
@@ -228,14 +229,37 @@ export function sanitizeSettings(raw: unknown): SanitizeResult {
     skiller: sanitizeSkiller(source["skiller"], warnings),
     skills: sanitizeSkills(source["skills"], warnings),
     verification: sanitizeVerification(source["verification"], warnings),
+    memory: sanitizeMemory(source["memory"], warnings),
     workflow: sanitizeWorkflow(source["workflow"], warnings),
   };
   for (const key of Object.keys(source)) {
     // $schema 是給編輯器的提示（見 schema 檔），不屬於執行期設定：安靜丟掉，不警告。
     if (key === "$schema") continue;
-    if (!["modules", "skiller", "skills", "verification", "workflow"].includes(key)) {
+    if (!["modules", "skiller", "skills", "verification", "workflow", "memory"].includes(key)) {
       warnUnknownKey(warnings, "(根層)", key);
     }
   }
   return { settings, warnings };
+}
+
+function sanitizeMemory(raw: unknown, warnings: string[]): UltraworkSettings["memory"] {
+  const memory = { writerAgents: [...DEFAULT_SETTINGS.memory.writerAgents], inject: DEFAULT_SETTINGS.memory.inject };
+  if (raw === undefined) return memory;
+  if (!isPlainObject(raw)) {
+    warnInvalidType(warnings, "memory", raw, memory);
+    return memory;
+  }
+  if (raw.writerAgents !== undefined) {
+    const agents = asStringList(raw.writerAgents);
+    if (agents) memory.writerAgents = agents;
+    else warnInvalidType(warnings, "memory.writerAgents", raw.writerAgents, memory.writerAgents);
+  }
+  if (raw.inject !== undefined) {
+    if (typeof raw.inject === "boolean") memory.inject = raw.inject;
+    else warnInvalidType(warnings, "memory.inject", raw.inject, true);
+  }
+  for (const key of Object.keys(raw)) {
+    if (key !== "writerAgents" && key !== "inject") warnUnknownKey(warnings, "memory", key);
+  }
+  return memory;
 }

@@ -165,3 +165,81 @@ describe("workflow_doctor 版控衛生：廣泛否定也算豁免", () => {
     await fake.registration?.dispose();
   });
 });
+
+describe("workflow_doctor 版控衛生：專案根目錄同時是全域設定資料夾", () => {
+  function initRepo(root: string): void {
+    execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "test"], { cwd: root, stdio: "ignore" });
+  }
+
+  test("全域層檔案被追蹤 → 不當成專案資料外洩，passed 並註明排除了哪些", async () => {
+    if (!hasGit()) return;
+    const root = await tempRoot();
+    writeMinimalWorkspace(root);
+    writeMemoryFile(root, "skills-policy.json", "{}\n");
+    writeMemoryFile(root, "skills-personal.json", "{}\n");
+    writeFileSync(join(root, ".ultrawork", ".gitignore"), "*\n!.gitignore\n!skills-policy.json\n!skills-personal.json\n", "utf-8");
+    initRepo(root);
+    execFileSync(
+      "git",
+      ["add", ".ultrawork/.gitignore", ".ultrawork/skills-policy.json", ".ultrawork/skills-personal.json"],
+      { cwd: root, stdio: "ignore" },
+    );
+
+    const fake = await setupDiagnostics(root, undefined, { globalDir: root });
+    const r = await callTool(fake, "workflow_doctor");
+    const item = checkByName(r, "Ultrawork Git Tracking");
+    expect(item.status).toBe("passed");
+    expect(item.details).toContain("skills-policy.json");
+    expect(item.details).toContain("全域");
+    expect(r.warnings.some((w: string) => w.startsWith("[tracking]"))).toBe(false);
+    expect(checkByName(r, "Ultrawork Gitignore").status).toBe("passed");
+    await fake.registration?.dispose();
+  });
+
+  test("同資料夾時專案層的工作流資料被追蹤，仍然 warn，且只列專案層檔案", async () => {
+    if (!hasGit()) return;
+    const root = await tempRoot();
+    writeMinimalWorkspace(root);
+    writeMemoryFile(root, "skills-policy.json", "{}\n");
+    initRepo(root);
+    execFileSync("git", ["add", ".ultrawork/tasks.json", ".ultrawork/skills-policy.json"], { cwd: root, stdio: "ignore" });
+
+    const fake = await setupDiagnostics(root, undefined, { globalDir: root });
+    const r = await callTool(fake, "workflow_doctor");
+    const item = checkByName(r, "Ultrawork Git Tracking");
+    expect(item.status).toBe("warn");
+    expect(item.details).toContain("1 個 .ultrawork/ 內的檔案正被版控追蹤（.ultrawork/tasks.json）");
+    const tracking = r.warnings.find((w: string) => w.startsWith("[tracking]"));
+    expect(tracking).toContain("tasks.json");
+    expect(tracking).not.toContain("skills-policy.json");
+    await fake.registration?.dispose();
+  });
+
+  test("同資料夾時豁免 ultrawork.jsonc（它也是全域設定檔）不警告", async () => {
+    const root = await tempRoot();
+    writeMinimalWorkspace(root);
+    writeFileSync(join(root, ".ultrawork", ".gitignore"), "*\n!ultrawork.jsonc\n", "utf-8");
+    const fake = await setupDiagnostics(root, undefined, { globalDir: root });
+    const r = await callTool(fake, "workflow_doctor");
+    expect(checkByName(r, "Ultrawork Gitignore").status).toBe("passed");
+    await fake.registration?.dispose();
+  });
+
+  test("專案根目錄不是全域設定資料夾時，skills-policy.json 被追蹤照常 warn", async () => {
+    if (!hasGit()) return;
+    const root = await tempRoot();
+    writeMinimalWorkspace(root);
+    writeMemoryFile(root, "skills-policy.json", "{}\n");
+    initRepo(root);
+    execFileSync("git", ["add", ".ultrawork/skills-policy.json"], { cwd: root, stdio: "ignore" });
+
+    const fake = await setupDiagnostics(root);
+    const r = await callTool(fake, "workflow_doctor");
+    const item = checkByName(r, "Ultrawork Git Tracking");
+    expect(item.status).toBe("warn");
+    expect(item.details).toContain("skills-policy.json");
+    await fake.registration?.dispose();
+  });
+});
