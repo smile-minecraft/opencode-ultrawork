@@ -35,6 +35,9 @@ jobs:
       - name: 安裝依賴
         run: bun install --frozen-lockfile
 
+      - name: 安裝 ripgrep（grep_context 需要 rg）
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
       - name: 檢查 tag 與 package.json 版本一致
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
