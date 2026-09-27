@@ -22,7 +22,7 @@ jobs:
       - name: 設定 Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.10
 
       - name: 設定 Node
         uses: actions/setup-node@v6
