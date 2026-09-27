@@ -54,21 +54,6 @@ jobs:
           set -o pipefail
           bun test 2>&1 | tee "$RUNNER_TEMP/uw-test-output.txt"
 
-      - name: 測試失敗時把輸出貼到診斷 issue
-        if: failure() && steps.test.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          {
-            echo "workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo "ref: ${{ github.ref_name }} | sha: ${{ github.sha }}"
-            echo ""
-            echo '```'
-            tail -60 "$RUNNER_TEMP/uw-test-output.txt"
-            echo '```'
-          } > "$RUNNER_TEMP/uw-body.txt"
-          gh issue comment 1 --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/uw-body.txt"
-
       - name: 型別檢查
         run: bun run typecheck
 
@@ -76,11 +61,10 @@ jobs:
         run: npm pack --dry-run
 
       - name: 發布到 npm
-        # 公開 repo＋公開套件＋OIDC 登入時，provenance 會自動產生，不用加參數。
-        # 想改成人工核准後才公開：npm 端改用 `npm stage publish`（Allowed actions 只允許它），
-        # 這裡對應改成 stage 指令，再由可信人員在 npm 網站確認上架。
-        run: npm publish
-
+        id: publish
+        run: |
+          set -o pipefail
+          npm publish 2>&1 | tee "$RUNNER_TEMP/uw-publish-output.txt"
       - name: 向 registry 確認版本與 shasum
         run: |
           set -euo pipefail
@@ -97,3 +81,23 @@ jobs:
             echo "shasum 不一致，發布可能有問題"
             exit 1
           fi
+
+      - name: 失敗時把關鍵輸出貼到診斷 issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "ref: ${{ github.ref_name }} | sha: ${{ github.sha }}"
+            for f in "$RUNNER_TEMP/uw-test-output.txt" "$RUNNER_TEMP/uw-publish-output.txt"; do
+              if [ -f "$f" ]; then
+                echo ""
+                echo "### $(basename "$f")"
+                echo '```'
+                tail -40 "$f"
+                echo '```'
+              fi
+            done
+          } > "$RUNNER_TEMP/uw-body.txt"
+          gh issue comment 1 --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/uw-body.txt"
