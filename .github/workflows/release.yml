@@ -46,7 +46,10 @@ jobs:
 
       - name: 測試
         id: test
-        run: bun test 2>&1 | tee "$RUNNER_TEMP/uw-test-output.txt"
+        run: |
+          # pipefail：沒有它，管線的 exit code 會是 tee 的，測試失敗會被吞掉。
+          set -o pipefail
+          bun test 2>&1 | tee "$RUNNER_TEMP/uw-test-output.txt"
 
       - name: 測試失敗時把輸出貼到診斷 issue
         if: failure() && steps.test.outcome == 'failure'
