@@ -1,0 +1,76 @@
+name: release
+
+# push v 開頭的 tag（例如 v2.2.1）才發布；分支 push 不會觸發。
+"on":
+  push:
+    tags:
+      - "v*"
+
+# OIDC trusted publishing 不需要任何長效憑證：
+# GitHub 用 id-token 向 npm 換一次性發行憑證，所以這裡沒有 secrets。
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  release:
+    # npm 只支援 GitHub 代管的 runner，自架 runner 不能用 trusted publishing。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: 設定 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: 設定 Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          # 發布構建一律不用快取，確保裝的是鎖定版本。
+          package-manager-cache: false
+
+      - name: 安裝依賴
+        run: bun install --frozen-lockfile
+
+      - name: 檢查 tag 與 package.json 版本一致
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "tag（$GITHUB_REF_NAME）與 package.json（$pkg_version）不一致，停止發布"
+            exit 1
+          fi
+
+      - name: 測試
+        run: bun test
+
+      - name: 型別檢查
+        run: bun run typecheck
+
+      - name: 打包檢查
+        run: npm pack --dry-run
+
+      - name: 發布到 npm
+        # 公開 repo＋公開套件＋OIDC 登入時，provenance 會自動產生，不用加參數。
+        # 想改成人工核准後才公開：npm 端改用 `npm stage publish`（Allowed actions 只允許它），
+        # 這裡對應改成 stage 指令，再由可信人員在 npm 網站確認上架。
+        run: npm publish
+
+      - name: 向 registry 確認版本與 shasum
+        run: |
+          set -euo pipefail
+          pkg_version="$(node -p "require('./package.json').version")"
+          # 剛發布完 registry 可能還沒同步，有限次重試是等 CDN，不是掩蓋錯誤。
+          meta="$(curl -fsSL --retry 5 --retry-delay 10 "https://registry.npmjs.org/opencode-ultrawork/$pkg_version")"
+          remote_shasum="$(node -e "console.log(JSON.parse(require('fs').readFileSync(0, 'utf8')).dist.shasum)" <<< "$meta")"
+          tarball="$(npm pack --silent)"
+          local_shasum="$(sha1sum "$tarball" | cut -d' ' -f1)"
+          rm -f "$tarball"
+          echo "線上 shasum：$remote_shasum"
+          echo "本地 shasum：$local_shasum"
+          if [ "$remote_shasum" != "$local_shasum" ]; then
+            echo "shasum 不一致，發布可能有問題"
+            exit 1
+          fi
