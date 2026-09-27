@@ -1463,12 +1463,33 @@ describe("verification_run（新模組）", () => {
     }
   }
 
+  // 固定等待（例如睡 6.5 秒再斷言心跳已停）假設了「SIGKILL 一定在那之前
+  // 送達」；忙碌的機器（CI、剛跑完安裝）上訊號送達會延後，心跳還在跳就
+  // 會誤判失敗。所以這裡改為輪詢：在明確上限內每隔一段時間讀一次心跳，
+  // 直到連續兩次讀值相同才判定 worker 已被 SIGKILL 殺掉。輪詢間隔 500ms
+  // 是 worker 寫心跳週期（0.2 秒）的兩倍以上，活著的 worker 兩次讀值必定
+  // 不同；上限 20 秒遠大於 SIGTERM→SIGKILL 寬限期（4 秒），只在 SIGKILL
+  // 真的沒送達時才會用完。
   async function expectHeartbeatFrozen(heartbeat: string): Promise<void> {
-    // SIGKILL 在 SIGTERM 約 4 秒後送達；6.5 秒後心跳必須已經停止。
-    await new Promise((resolve) => setTimeout(resolve, 6500));
-    const first = readFileSync(heartbeat, "utf8");
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    expect(readFileSync(heartbeat, "utf8")).toBe(first);
+    const POLL_INTERVAL_MS = 500;
+    const POLL_BUDGET_MS = 20_000;
+    const startedAt = Date.now();
+    let previous = readFileSync(heartbeat, "utf8");
+    let changes = 0;
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      const current = readFileSync(heartbeat, "utf8");
+      if (current === previous) return;
+      changes += 1;
+      previous = current;
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= POLL_BUDGET_MS) {
+        throw new Error(
+          `worker 心跳在 ${elapsed}ms 內沒有停止（期間觀察到 ${changes} 次變化）：` +
+            `SIGKILL 可能沒有送達：${heartbeat}`,
+        );
+      }
+    }
   }
 
   test("取消：worker 忽略 SIGTERM 時，leader 退出後 SIGKILL 仍要殺掉 worker", async () => {
@@ -1489,7 +1510,8 @@ describe("verification_run（新模組）", () => {
     expect(result.ok).toBe(false);
     expect(result.code).toBe("CANCELLED");
     await expectHeartbeatFrozen(heartbeat);
-  }, 15_000);
+    // 輪詢上限 20 秒＋工具側最長等待（群組退出 6 秒＋drain 2 秒），30 秒才夠。
+  }, 30_000);
 
   test("逾時：worker 忽略 SIGTERM 時，leader 退出後 SIGKILL 仍要殺掉 worker", async () => {
     const heartbeat = join(ws.root, "ignore-term-heartbeat-timeout");
@@ -1506,7 +1528,8 @@ describe("verification_run（新模組）", () => {
     expect(result.code).toBe("TIMEOUT");
     expect(result.timedOut).toBe(true);
     await expectHeartbeatFrozen(heartbeat);
-  }, 15_000);
+    // 輪詢上限 20 秒＋工具側最長等待（群組退出 6 秒＋drain 2 秒），30 秒才夠。
+  }, 30_000);
 });
 
 describe("verification_run 授權清單可由設定覆寫", () => {
