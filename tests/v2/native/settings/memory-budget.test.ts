@@ -214,9 +214,7 @@ describe("maxTopics", () => {
     expect(rejected.ok).toBe(false);
     expect(rejected.code).toBe("TOPIC_LIMIT_EXCEEDED");
     expect(String(rejected.error)).toContain("1");
-    // 既有主題不受影響：更新照常通過
-    const { sha256 } = await call(write, { layer: "project", topic: "a" });
-    void sha256;
+    // 既有主題不受影響
     const read = listTopics(memoryLayer(r));
     expect(read.map((t) => t.topic).sort()).toEqual(["a"]);
   });

@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_SETTINGS, MODULE_KEYS } from "../../../../src/settings/defaults.ts";
-import { DEFAULT_MEMORY_BUDGET } from "../../../../src/modules/memory/constants.ts";import { parseJsonc, stripJsoncComments } from "../../../../src/settings/jsonc.ts";
+import { DEFAULT_MEMORY_BUDGET } from "../../../../src/modules/memory/constants.ts";
+import { parseJsonc, stripJsoncComments } from "../../../../src/settings/jsonc.ts";
 import {
   REPO_ROOT,
   collectKeywords,

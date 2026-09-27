@@ -48,11 +48,11 @@
     "budget": {
       // "global": { "indexCharLimit": 3000 },
       "project": {
-        "indexCharLimit": 3000, // 該層索引上限，超過就拒絕寫入
-        "topicCharLimit": 4000, // 單一主題檔上限
-        "descriptionCharLimit": 120, // 索引每行 description 上限
+        "indexCharLimit": 3000, // 該層索引上限；只在寫入變大且超標時拒絕，已超標的縮減、刪除、核對仍可寫入
+        "topicCharLimit": 4000, // 單一主題檔上限；只在寫入變大且超標時拒絕，已超標的縮減、刪除、核對仍可寫入
+        "descriptionCharLimit": 120, // 索引每行 description 上限，超過就拒絕
         "maxTopics": 0, // 該層主題數上限，0 = 不限制；超過只擋新增
-        "pinnedLimit": 3, // pinned 主題數上限
+        "pinnedLimit": 3, // pinned 數上限；只在增加且超標時拒絕，已超標時取消 pinned 或核對仍可寫入
         "pinnedInjectBudget": 2500, // 注入 pinned 正文的總預算（展示截斷）
         "noteCharLimit": 1000 // 單筆 memory-note 上限
       }
