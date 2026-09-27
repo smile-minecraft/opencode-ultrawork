@@ -1,6 +1,6 @@
 {
   "name": "opencode-ultrawork",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "type": "module",
   "description": "OpenCode V2 原生外掛（ultrawork）：49 個工具與 6 個 hook，涵蓋工作區搜尋、驗證、工作說明檢查、Comment Signal、技能管理、任務與計畫狀態、診斷與專案記憶。",
   "license": "MIT",

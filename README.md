@@ -46,8 +46,8 @@ hook 共 6 個（名稱凍結，註冊點對照見 `src/modules/diagnostics/inve
 | 形式 | 寫法 | 版本 | 適用情境 |
 |---|---|---|---|
 | npm | `"opencode-ultrawork"` | 自動抓 `latest`，會跟著更新 | 一般使用者，想直接用最新版本 |
-| npm（釘住 major） | `"opencode-ultrawork@^2.2.0"` | 只收 `2.x` 的更新 | 想自動吃小改動，但不跨大版本 |
-| npm（完全釘住） | `"opencode-ultrawork@2.2.0"` | 固定不動 | 需要可重現的環境 |
+| npm（釘住 major） | `"opencode-ultrawork@^2.3.0"` | 只收 `2.x` 的更新 | 想自動吃小改動，但不跨大版本 |
+| npm（完全釘住） | `"opencode-ultrawork@2.3.0"` | 固定不動 | 需要可重現的環境 |
 | git | `"github:smile-minecraft/opencode-ultrawork#<完整 commit hash>"` | 固定在那個 commit | 要用還沒發布的 commit，或追 V2 開發進度 |
 | 本機目錄 | `"/path/to/opencode-ultrawork"` | 跟你 working tree 走 | 開發這個外掛本身 |
 
@@ -64,7 +64,7 @@ npm 形式（一般使用者）：
 ```jsonc
 {
   // 收 2.x 的更新，不跨到 3.0
-  "plugins": ["opencode-ultrawork@^2.2.0"]
+  "plugins": ["opencode-ultrawork@^2.3.0"]
 }
 ```
 
@@ -264,7 +264,7 @@ Comment Signal 只掃「註解語法有對應 lexer 分支」的副檔名，共 
 
 以下是在設定 repo（`~/.config/opencode` 那一側）要做的事：
 
-1. `opencode.jsonc` 加上 `"plugins": [..., "opencode-ultrawork@^2.2.0"]`（或用 `github:` 形式釘住某個 commit，見「安裝」）；刪掉 `plugins/opencode-ultrawork.ts`、`plugins/opencode-ultrawork/`、`tests/ultrawork/`、`scripts/generate-ultrawork-baseline.ts`。
+1. `opencode.jsonc` 加上 `"plugins": [..., "opencode-ultrawork@^2.3.0"]`（或用 `github:` 形式釘住某個 commit，見「安裝」）；刪掉 `plugins/opencode-ultrawork.ts`、`plugins/opencode-ultrawork/`、`tests/ultrawork/`、`scripts/generate-ultrawork-baseline.ts`。
 2. `skills-policy.json`、`skills-personal.json`、`skill-drafts/`、`skill-quarantine/` 搬到 `<全域設定資料夾>/.ultrawork/`（外掛第一次啟動會自動搬；但設定 repo 裡讀它們的 `scripts/skill-approval.ts`、`scripts/skill-profile.ts`、`lib/skill-capability.ts` 和 `tests/config/` 的契約測試要改路徑）。
 3. `AGENTS.md`、`agents/*.md`、`commands/*.md` 裡的 `.opencode/memory/…`、`.opencode/plans/…` 字串改成 `.ultrawork/…`。
 4. `lib/dcp-evidence-policy.ts` 列的是 ultrawork 工具名稱，名稱沒變就不用改。
