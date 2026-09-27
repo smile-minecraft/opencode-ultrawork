@@ -17,7 +17,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupUltrawork } from "../../../src/index.ts";
 import { searchModule } from "../../../src/modules/search/index.ts";
@@ -382,10 +382,14 @@ describe("search 模組：grep_context", () => {
   });
   test("不安全的工作階段根目錄直接 fail closed", async () => {
     const ws = createWorkspace();
-    // fixture 只用暫存路徑：alias 在暫存目錄下，canonical 分別指向 /、/Users、
-    // /Volumes（lexical 字面不再拿真的系統根當根目錄，避免 setup 時對真的 /
+    // fixture 只用暫存路徑：alias 在暫存目錄下，canonical 分別指向 / 與
+    // 家目錄（lexical 字面不再拿真的系統根當根目錄，避免 setup 時對真的 /
     // 跑搬遷；字面 "/" 的判定由 kit isUnsafeRoot 單元測試覆蓋）。
-    const unsafeTargets = ["/", "/Users", "/Volumes"];
+    // 注意：不要在這裡加 /Users、/Volumes——它們只在 macOS 存在，Linux 上
+    // 不存在會讓 symlink 解不到真實路徑、判定落空（isUnsafeRoot 對解不到
+    // 真實路徑的別名走最近存在祖先比對，會回到暫存父目錄而不命中黑名單）。
+    // /Users、/Volumes 的字面黑名單由 kit isUnsafeRoot 單元測試覆蓋。
+    const unsafeTargets = ["/", homedir()];
     const aliases = unsafeTargets.map((_, index) => join(tmpdir(), `ultrawork-root-alias-${Date.now()}-${index}`));
     try {
       for (const [index, target] of unsafeTargets.entries()) {

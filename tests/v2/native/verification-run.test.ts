@@ -612,7 +612,7 @@ describe("verification_run（新模組）", () => {
     }
   });
 
-  test("unsafe canonical root（symlink alias → /、/Users、/Volumes）必須 fail closed，不啟動 runner", async () => {
+  test("unsafe canonical root（symlink alias → /、家目錄）必須 fail closed，不啟動 runner", async () => {
     const aliasParent = mkdtempSync(join(tmpdir(), "verification-run-alias-parent-"));
     const outside = mkdtempSync(join(tmpdir(), "verification-run-alias-marker-"));
     const markerPath = join(outside, "unsafe-pytest-ran");
@@ -628,17 +628,22 @@ describe("verification_run（新模組）", () => {
       chmodSync(fakePytest, 0o755);
       process.env.PATH = `${fakeBin}${delimiter}${process.env.PATH ?? ""}`;
 
-      const unsafeTargets = ["/", "/Users", "/Volumes"] as const;
+      // 只用跨平台都存在且屬於 protected root 的目標：/ 與家目錄。
+      // 不要在這裡加 /Users、/Volumes——它們只在 macOS 存在，Linux 上
+      // 不存在會讓 symlink 解不到真實路徑、判定落空（isUnsafeRoot 對解不到
+      // 真實路徑的別名走最近存在祖先比對，會回到暫存父目錄而不命中黑名單）。
+      // /Users、/Volumes 的字面黑名單由 kit isUnsafeRoot 單元測試覆蓋。
+      const unsafeTargets = ["/", homedir()] as const;
       const observations: Array<{ target: string; code: string; markerCreated: boolean }> = [];
 
-      for (const unsafeTarget of unsafeTargets) {
+      for (const [targetIndex, unsafeTarget] of unsafeTargets.entries()) {
         try {
           rmSync(markerPath);
         } catch {
           // ignore
         }
 
-        const aliasRoot = join(aliasParent, `alias-to-${unsafeTarget.slice(1) || "root"}`);
+        const aliasRoot = join(aliasParent, `alias-to-unsafe-${targetIndex}`);
         symlinkSync(unsafeTarget, aliasRoot);
 
         try {
@@ -671,8 +676,7 @@ describe("verification_run（新模組）", () => {
 
       expect(observations).toEqual([
         { target: "/", code: "INVALID_CWD", markerCreated: false },
-        { target: "/Users", code: "INVALID_CWD", markerCreated: false },
-        { target: "/Volumes", code: "INVALID_CWD", markerCreated: false },
+        { target: homedir(), code: "INVALID_CWD", markerCreated: false },
       ]);
     } finally {
       rmSync(outside, { recursive: true, force: true });

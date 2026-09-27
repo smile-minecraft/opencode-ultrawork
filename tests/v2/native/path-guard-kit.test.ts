@@ -52,7 +52,10 @@ describe("kit isUnsafeRoot：唯一的黑名單判定", () => {
   test("指到 unsafe 目標的 symlink alias 也是 unsafe", () => {
     const parent = mkdtempSync(join(tmpdir(), "kit-unsafe-alias-"));
     try {
-      for (const target of ["/", "/Users", "/Volumes", homedir()]) {
+      // 只用跨平台都存在且屬於 protected root 的目標（`/` 與家目錄）：
+      // `/Users`、`/Volumes` 只在 macOS 存在，Linux runner 上不存在時
+      // symlink 解不到真實路徑、alias 會被判 safe，斷言失效，故不用。
+      for (const target of ["/", homedir()]) {
         const alias = join(parent, `alias-${target.replace(/[^A-Za-z0-9]+/g, "-")}`);
         symlinkSync(target, alias, "dir");
         expect(isUnsafeRoot(alias)).toBe(true);
