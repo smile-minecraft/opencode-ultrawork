@@ -863,7 +863,8 @@ describe("verification_run（新模組）", () => {
     );
     expect(result.timedOut).toBe(true);
     expect(String(result.stdout)).toContain("PARTIAL_OUTPUT_BEFORE_HANG");
-  });
+    // 工具側逾時升級（SIGTERM→SIGKILL＋輸出 drain）在慢環境下會拖長，逼近 bun 預設 5 秒，給 30 秒才夠。
+  }, 30_000);
 
   // ——— B2：逾時上限與 process group 清理 ———
 
@@ -889,7 +890,8 @@ describe("verification_run（新模組）", () => {
     // 給「本來會 touch marker」的孫程序足夠時間
     await new Promise((resolve) => setTimeout(resolve, 2500));
     expect(existsSync(marker)).toBe(false);
-  });
+    // 逾時 500ms＋工具側升級等待＋事後 2.5 秒等待合計約 3 秒，慢環境下逼近 bun 預設 5 秒，給 30 秒才夠。
+  }, 30_000);
 
   test("timeoutMs 上限為 600 秒", async () => {
     installFakeRunner("go");
@@ -1295,7 +1297,8 @@ describe("verification_run（新模組）", () => {
     // 孫程序跟著整個 group 被殺掉，不會事後 touch marker。
     await new Promise((resolve) => setTimeout(resolve, 2500));
     expect(existsSync(marker)).toBe(false);
-  });
+    // 取消等待＋工具側升級等待＋事後 2.5 秒等待合計約 3 秒，慢環境下逼近 bun 預設 5 秒，給 30 秒才夠。
+  }, 30_000);
 
   test("取消：呼叫前就已中止的 signal 不啟動子程序", async () => {
     const marker = join(ws.root, "cancel-prespawn-marker");
