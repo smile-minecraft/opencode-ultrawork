@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { z } from "zod";
 import { atomicWriteFile } from "../../../kit/atomic-write.ts";
-import { DESCRIPTION_CHAR_LIMIT, INDEX_CHAR_LIMIT, PINNED_LIMIT, TOPIC_CHAR_LIMIT } from "../constants.ts";
+import type { MemoryLayerBudget } from "../constants.ts";
 import { renderIndex } from "../index-render.ts";
 import { MemoryError, memoryPath, readOptional, withMemoryLock, type MemoryLayer } from "../layers.ts";
 import { appendLog, pendingNotes, readLog } from "../log.ts";
@@ -28,7 +28,7 @@ import {
   validateSlug,
   type TopicFrontmatter,
 } from "../topic.ts";
-import { identity, layerSchema, memoryTool, requireWriter, resolveLayers, type MemoryToolDeps } from "./shared.ts";
+import { identity, layerSchema, budgetForDepsLayer, memoryTool, requireWriter, resolveLayers, type MemoryToolDeps } from "./shared.ts";
 
 const inputSchema = z.object({
   layer: layerSchema,
@@ -65,7 +65,7 @@ interface PreparedWrite {
 }
 
 /** 算出寫入結果並收集所有問題；不寫任何檔案。preview 與 apply 共用。 */
-function prepare(layer: MemoryLayer, input: WriteInput): PreparedWrite {
+function prepare(layer: MemoryLayer, input: WriteInput, budget: MemoryLayerBudget): PreparedWrite {
   validateSlug(input.topic);
   const path = memoryPath(layer, "topics", `${input.topic}.md`);
   const before = readOptional(path);
@@ -128,9 +128,9 @@ function prepare(layer: MemoryLayer, input: WriteInput): PreparedWrite {
 
   let raw = frontmatter && input.op !== "delete" ? renderTopic(frontmatter, body) : null;
   if (raw !== null) {
-    if (raw.length > TOPIC_CHAR_LIMIT) issue("TOPIC_TOO_LARGE", `主題超過 ${TOPIC_CHAR_LIMIT} 字元，請拆成較小的主題。`);
-    if (frontmatter!.description.length > DESCRIPTION_CHAR_LIMIT) {
-      issue("DESCRIPTION_TOO_LONG", `description 不得超過 ${DESCRIPTION_CHAR_LIMIT} 字元。`);
+    if (raw.length > budget.topicCharLimit) issue("TOPIC_TOO_LARGE", `主題超過 ${budget.topicCharLimit} 字元，請拆成較小的主題。`);
+    if (frontmatter!.description.length > budget.descriptionCharLimit) {
+      issue("DESCRIPTION_TOO_LONG", `description 不得超過 ${budget.descriptionCharLimit} 字元。`);
     }
     try {
       parseTopic(input.topic, raw);
@@ -143,12 +143,17 @@ function prepare(layer: MemoryLayer, input: WriteInput): PreparedWrite {
   }
 
   const topics = listTopics(layer).filter((topic) => topic.topic !== input.topic);
+  // 主題數上限只擋「新增」：更新、核對、封存不增減數量，既有超標的主題
+  // 不刪除也不自動裁減，只擋新的寫入並由診斷提示。
+  if (input.op === "create" && before === null && budget.maxTopics > 0 && topics.length >= budget.maxTopics) {
+    issue("TOPIC_LIMIT_EXCEEDED", `該層已有 ${topics.length} 個主題，達到上限 ${budget.maxTopics}，請先合併或封存既有主題再新增。`);
+  }
   if (raw !== null) topics.push(parseTopic(input.topic, raw));
   const index = renderIndex(topics, layer.layer);
   const pinned = topics.filter((topic) => topic.frontmatter.pinned).length;
-  if (pinned > PINNED_LIMIT) issue("PINNED_LIMIT_EXCEEDED", `每層最多 ${PINNED_LIMIT} 個 pinned 主題。`);
-  if (index.length > INDEX_CHAR_LIMIT) {
-    issue("INDEX_BUDGET_EXCEEDED", `寫入後索引會超過 ${INDEX_CHAR_LIMIT} 字元，請先合併或精簡既有主題的 description。`);
+  if (pinned > budget.pinnedLimit) issue("PINNED_LIMIT_EXCEEDED", `每層最多 ${budget.pinnedLimit} 個 pinned 主題。`);
+  if (index.length > budget.indexCharLimit) {
+    issue("INDEX_BUDGET_EXCEEDED", `寫入後索引會超過 ${budget.indexCharLimit} 字元，請先合併或精簡既有主題的 description。`);
   }
   return { path, before, raw, index, pinned, issues };
 }
@@ -169,8 +174,9 @@ export function createMemoryWriteTool(deps: MemoryToolDeps) {
     async (input, context) => {
       requireWriter(deps, context);
       const layer = (await resolveLayers(deps, context, input.layer))[0]!;
+      const budget = budgetForDepsLayer(deps, layer.layer);
       if (input.mode !== "apply") {
-        const preview = prepare(layer, input);
+        const preview = prepare(layer, input, budget);
         return {
           ok: true,
           mode: "preview",
@@ -182,7 +188,7 @@ export function createMemoryWriteTool(deps: MemoryToolDeps) {
       }
 
       return withMemoryLock(layer, () => {
-        const prepared = prepare(layer, input);
+        const prepared = prepare(layer, input, budget);
         if (prepared.issues.length > 0) {
           throw new MemoryError(prepared.issues[0]!.code, prepared.issues[0]!.error, {
             issues: prepared.issues,

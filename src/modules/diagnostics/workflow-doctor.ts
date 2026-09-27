@@ -154,7 +154,7 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
       check("tasks.json exists", existsSync(paths.TASKS_JSON), paths.TASKS_JSON);
 
       // ── 記憶體預算 ──
-      const budget = collectMemoryBudget(paths, deps.globalConfigDir);
+      const budget = collectMemoryBudget(paths, deps.globalConfigDir, deps.settings.memory.budget);
       diagnosis.memory_budget = budget.memory_budget;
       warnings.push(...budget.warnings);
       diagnosis.checks.push(...budget.checks);

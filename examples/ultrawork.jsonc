@@ -41,7 +41,22 @@
 
   "memory": {
     "writerAgents": ["memorizer"], // 只允許寫在全域設定
-    "inject": true
+    "inject": true,
+    // 兩層記憶各自的預算，全部選填（沒寫的欄位用內建預設）。
+    // budget.global 只允許寫在全域設定，寫在專案層會被忽略並警告；
+    // budget.project 兩層都能寫，專案層只影響專案層記憶。
+    "budget": {
+      // "global": { "indexCharLimit": 3000 },
+      "project": {
+        "indexCharLimit": 3000, // 該層索引上限，超過就拒絕寫入
+        "topicCharLimit": 4000, // 單一主題檔上限
+        "descriptionCharLimit": 120, // 索引每行 description 上限
+        "maxTopics": 0, // 該層主題數上限，0 = 不限制；超過只擋新增
+        "pinnedLimit": 3, // pinned 主題數上限
+        "pinnedInjectBudget": 2500, // 注入 pinned 正文的總預算（展示截斷）
+        "noteCharLimit": 1000 // 單筆 memory-note 上限
+      }
+    }
   },
   "workflow": {
     "completion": {

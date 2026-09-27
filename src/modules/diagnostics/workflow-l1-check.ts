@@ -19,7 +19,7 @@ import { z } from "zod";
 import { defineTool } from "../../kit/define-tool.ts";
 import { jsonResult } from "../../kit/json.ts";
 import { BOOTSTRAP_FULL_SOFT_BUDGET, STATE_MD_LIMIT } from "../workflow/core/constants.ts";
-import { INDEX_CHAR_LIMIT, TOPIC_CHAR_LIMIT } from "../memory/constants.ts";
+import { budgetForLayer } from "../memory/constants.ts";
 import { memoryLayers } from "../memory/layers.ts";
 import { listTopics } from "../memory/topic.ts";
 import { renderIndex } from "../memory/index-render.ts";
@@ -113,7 +113,7 @@ export function createWorkflowL1CheckTool(deps: DiagnosticsDeps) {
         }
       };
 
-      // 記憶改成兩層主題之後，逐層檢查索引與每個主題的大小；上限見 memory/constants.ts。
+      // 記憶改成兩層主題之後，逐層檢查索引與每個主題的大小；上限是該層的設定。
       // 超過上限時 ok=false，與舊版 project.md 超限的判定一致（l1_check 本來就是大小檢查）。
       let memoryIndexSize = 0;
       const checkMemoryItem = (name: string, size: number, limit: number) => {
@@ -134,11 +134,12 @@ export function createWorkflowL1CheckTool(deps: DiagnosticsDeps) {
       };
       try {
         for (const layer of memoryLayers(paths.PROJECT_ROOT, deps.globalConfigDir)) {
+          const budget = budgetForLayer(deps.settings.memory.budget, layer.layer);
           const topics = listTopics(layer);
           const index = topics.length > 0 ? renderIndex(topics, layer.layer) : "";
           memoryIndexSize += index.length;
-          checkMemoryItem(`${layer.layer}/MEMORY.md`, index.length, INDEX_CHAR_LIMIT);
-          for (const topic of topics) checkMemoryItem(`${layer.layer}/${topic.topic}`, topic.size, TOPIC_CHAR_LIMIT);
+          checkMemoryItem(`${layer.layer}/MEMORY.md`, index.length, budget.indexCharLimit);
+          for (const topic of topics) checkMemoryItem(`${layer.layer}/${topic.topic}`, topic.size, budget.topicCharLimit);
         }
       } catch {
         report.warnings.push("記憶無法安全讀取（根目錄不安全、符號連結或主題格式錯誤），未檢查記憶大小；請執行 workflow_doctor 查看細節。");

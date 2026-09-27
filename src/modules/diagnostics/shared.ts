@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { GLOBAL_MIGRATION_ITEMS, ultraworkGitignoreHasRequiredLines } from "../../migrate/index.ts";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 import { BOOTSTRAP_FULL_SOFT_BUDGET, STATE_MD_LIMIT } from "../workflow/core/constants.ts";
-import { INDEX_CHAR_LIMIT, LOG_WARN_BYTES, PINNED_LIMIT, TOPIC_CHAR_LIMIT } from "../memory/constants.ts";
+import { DEFAULT_MEMORY_BUDGET, LOG_WARN_BYTES, budgetForLayer, type MemoryBudgets } from "../memory/constants.ts";
 import { memoryLayers, memoryPath, readOptional } from "../memory/layers.ts";
 import { listTopics } from "../memory/topic.ts";
 import { renderIndex } from "../memory/index-render.ts";
@@ -51,7 +51,7 @@ export interface CheckItem {
   details: string;
 }
 
-/** 單一記憶層的預算狀態（企劃書第 12 節）。 */
+/** 單一記憶層的預算狀態（企劃書第 12 節）。欄位形狀凍結：上限走設定值，不加欄位。 */
 export interface LayerBudget {
   index_chars: number;
   index_limit: number;
@@ -84,7 +84,7 @@ export interface PlanRegistryHealth {
 }
 
 function emptyLayerBudget(): LayerBudget {
-  return { index_chars: 0, index_limit: INDEX_CHAR_LIMIT, topics: 0, oversized_topics: [], pinned: 0, status: "ok" };
+  return { index_chars: 0, index_limit: DEFAULT_MEMORY_BUDGET.indexCharLimit, topics: 0, oversized_topics: [], pinned: 0, status: "ok" };
 }
 
 export function emptyMemoryBudget(): MemoryBudget {
@@ -136,8 +136,11 @@ const PENDING_NOTES_WARN = 10;
  *
  * 所有項目都是 warn，不影響診斷 ok：預算超標、紀錄斷裂、待遷移都不會讓外掛停擺，
  * 需要的是派 memorizer 整理。state.md 與 bootstrap 的大小規則與舊版相同。
+ *
+ * 上限用「該層」的設定（`budgets` 沒給時用內建預設）；回傳欄位形狀不變，
+ * 超過上限（索引、超大主題、pinned 過多、主題數超限）都走同一個 warn。
  */
-export function collectMemoryBudget(paths: Paths, globalRoot: string = paths.PROJECT_ROOT): MemoryBudgetOutcome {
+export function collectMemoryBudget(paths: Paths, globalRoot: string = paths.PROJECT_ROOT, budgets?: MemoryBudgets): MemoryBudgetOutcome {
   const memory_budget = emptyMemoryBudget();
   const warnings: string[] = [];
   const checks: CheckItem[] = [];
@@ -148,20 +151,30 @@ export function collectMemoryBudget(paths: Paths, globalRoot: string = paths.PRO
   try {
     for (const layer of memoryLayers(paths.PROJECT_ROOT, globalRoot)) {
       try {
+        const budget = budgetForLayer(budgets, layer.layer);
         const topics = listTopics(layer);
         const index = topics.length > 0 ? renderIndex(topics, layer.layer) : "";
-        const oversized = topics.filter((topic) => topic.size > TOPIC_CHAR_LIMIT).map((topic) => topic.topic);
+        const oversized = topics.filter((topic) => topic.size > budget.topicCharLimit).map((topic) => topic.topic);
         const pinned = topics.filter((topic) => topic.frontmatter.pinned).length;
-        const overBudget = index.length > INDEX_CHAR_LIMIT || oversized.length > 0 || pinned > PINNED_LIMIT;
+        const overCount = budget.maxTopics > 0 && topics.length > budget.maxTopics;
+        const overBudget = index.length > budget.indexCharLimit || oversized.length > 0 || pinned > budget.pinnedLimit || overCount;
         memory_budget.layers[layer.layer] = {
           index_chars: index.length,
-          index_limit: INDEX_CHAR_LIMIT,
+          index_limit: budget.indexCharLimit,
           topics: topics.length,
           oversized_topics: oversized,
           pinned,
           status: overBudget ? "warn" : "ok",
         };
-        if (overBudget) warnings.push(`${layer.layer} 層記憶超過預算，請派 memorizer 用 memory-maintain report 整理。`);
+        if (overBudget) {
+          const reasons = [
+            index.length > budget.indexCharLimit ? `索引 ${index.length} 字元超過上限 ${budget.indexCharLimit}` : null,
+            oversized.length > 0 ? `主題 ${oversized.join("、")} 超過單主題上限 ${budget.topicCharLimit} 字元` : null,
+            pinned > budget.pinnedLimit ? `pinned ${pinned} 個超過上限 ${budget.pinnedLimit}` : null,
+            overCount ? `主題 ${topics.length} 個超過上限 ${budget.maxTopics}（既有主題保留，只擋新增）` : null,
+          ].filter((reason): reason is string => reason !== null);
+          warnings.push(`${layer.layer} 層記憶超過預算（${reasons.join("；")}），請派 memorizer 用 memory-maintain report 整理。`);
+        }
         if (topics.length > 0 && readOptional(memoryPath(layer, "MEMORY.md")) !== index) {
           warnings.push(`${layer.layer} 層的 MEMORY.md 與主題不一致，下一次 memory-write 會重建。`);
         }

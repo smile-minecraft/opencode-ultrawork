@@ -127,16 +127,23 @@ verified_at: 2026-09-27T08:00:00.000Z
 - 分組順序固定：Pinned、decision、pitfall、lesson、reference、preference；組內依 `updated` 新到舊。空的組不輸出。
 - 索引缺檔或內容跟重新產生的不一致時，讀取端以重新產生的結果為準；doctor 回報不一致。
 
-### 4.5 預算常數（`src/modules/memory/constants.ts`）
+### 4.5 預算（`memory.budget` 設定，預設值見 `src/modules/memory/constants.ts`）
+
+前六加一欄是可設定的分層預算：`memory.budget.global` 只採全域設定檔（專案層寫了整段忽略並警告，比照 `writerAgents`），`memory.budget.project` 兩層都能寫（深層合併）。沒寫的欄位用內建預設；型別或範圍錯誤的欄位警告並退回該欄預設，不影響外掛載入。
+
+| 欄位 | 預設 | 用途 |
+| --- | --- | --- |
+| `indexCharLimit` | 3000 | 每層索引上限；寫入後會超過就拒絕 |
+| `topicCharLimit` | 4000 | 每個主題檔（含 frontmatter）上限 |
+| `descriptionCharLimit` | 120 | `description` 上限 |
+| `maxTopics` | 0（不限制） | 每層主題數上限；超過只擋新增，既有超標主題不刪除，由診斷提示 |
+| `pinnedLimit` | 3 | 每層 pinned 主題數上限 |
+| `pinnedInjectBudget` | 2500 | 每層注入 pinned 正文的總字元預算 |
+| `noteCharLimit` | 1000 | 單筆筆記上限 |
+
+以下是程式常數，不開放設定：
 
 | 常數 | 值 | 用途 |
-| --- | --- | --- |
-| `INDEX_CHAR_LIMIT` | 3000 | 每層索引上限；寫入後會超過就拒絕 |
-| `TOPIC_CHAR_LIMIT` | 4000 | 每個主題檔（含 frontmatter）上限 |
-| `DESCRIPTION_CHAR_LIMIT` | 120 | `description` 上限 |
-| `PINNED_LIMIT` | 3 | 每層 pinned 主題數上限 |
-| `PINNED_INJECT_BUDGET` | 2500 | 每層注入 pinned 正文的總字元預算 |
-| `NOTE_CHAR_LIMIT` | 1000 | 單筆筆記上限 |
 | `EXTRACT_CONTENT_LIMIT` | 12000 | `memory-extract` 回傳任務內容的上限，超過截斷並註明 |
 | `SEARCH_DEFAULT_LIMIT` / `SEARCH_MAX_LIMIT` | 8 / 20 | 搜尋筆數 |
 | `STALE_DAYS` | 90 | `verified_at`（空則看 `updated`）超過就列為可能過時 |
@@ -152,7 +159,7 @@ src/kit/text-search.ts            queryTerms／containsTerm 從 skills 模組搬
 src/settings/paths.ts             新增 isSameAsGlobalConfigDir（自 diagnostics/shared.ts 搬來）
 src/modules/memory/
   index.ts                        註冊 7 個工具 + session context hook
-  constants.ts                    第 4.5 節常數
+  constants.ts                    第 4.5 節預設值與分層預算
   layers.ts                       解析兩層位置、共用資料夾判斷、containment
   topic.ts                        主題 frontmatter 解析／驗證／渲染、slug 驗證
   index-render.ts                 產生 MEMORY.md
@@ -192,8 +199,8 @@ src/migrate/memory-store.ts       project.md／receipts → 新格式的遷移
 
 依序：標記行、使用準則、全域層索引、全域層 pinned 正文、專案層索引、專案層 pinned 正文。
 
-- 每層索引超過 `INDEX_CHAR_LIMIT` 時，截到上限並附一行「索引超過預算，其餘主題請用 memory-search 查」。
-- pinned 正文依 `updated` 新到舊放入，累計超過 `PINNED_INJECT_BUDGET` 就停，附一行說明哪些 pinned 沒放進來。
+- 每層索引超過該層的 `indexCharLimit` 時，截到上限並附一行「索引超過預算，其餘主題請用 memory-search 查」。
+- pinned 正文依 `updated` 新到舊放入，累計超過該層的 `pinnedInjectBudget` 就停，附一行說明哪些 pinned 沒放進來。
 
 使用準則的文字（可以微調措辭，但下列各點都要保留）：
 
@@ -303,7 +310,7 @@ src/migrate/memory-store.ts       project.md／receipts → 新格式的遷移
 - `delete`：把主題檔移到 `archive/<slug>.<時間戳>.md`，不真的刪除。
 - `verify`：內容不變，只把 `verified_at` 設為現在，用於「核對過，仍然正確」。
 - `preview`：不寫檔、不取鎖；回傳渲染後的主題全文、寫入後的索引大小、pinned 數量，以及所有會擋下 apply 的問題（一次列出）。
-- `apply`：在該層的鎖內依序做：核對 `expectedSha256`（不符回 `SHA_MISMATCH` 並附目前 sha）→ 檢查主題大小、`description` 長度、pinned 數量、寫入後的索引大小（任一超過就拒絕，錯誤碼分別是 `TOPIC_TOO_LARGE`、`DESCRIPTION_TOO_LONG`、`PINNED_LIMIT_EXCEEDED`、`INDEX_BUDGET_EXCEEDED`）→ secret 檢查（`SECRET_DETECTED`，訊息不得回顯疑似 secret 本身）→ 原子寫入主題檔 → 重新產生索引 → 附加 log 紀錄（`kind: "write"`，每個被整理的筆記再各附加一筆 `note-consumed`）。
+- `apply`：在該層的鎖內依序做：核對 `expectedSha256`（不符回 `SHA_MISMATCH` 並附目前 sha）→ 檢查主題大小、`description` 長度、pinned 數量、寫入後的索引大小（任一超過就拒絕，錯誤碼分別是 `TOPIC_TOO_LARGE`、`DESCRIPTION_TOO_LONG`、`TOPIC_LIMIT_EXCEEDED`、`PINNED_LIMIT_EXCEEDED`、`INDEX_BUDGET_EXCEEDED`）→ secret 檢查（`SECRET_DETECTED`，訊息不得回顯疑似 secret 本身）→ 原子寫入主題檔 → 重新產生索引 → 附加 log 紀錄（`kind: "write"`，每個被整理的筆記再各附加一筆 `note-consumed`）。
 - 回傳 `{ ok: true, layer, topic, op, sha256, seq, indexChars }`。
 - 如果檔案寫入成功、但附加 log 失敗：把主題檔回復成寫入前的位元組並回 `MEMORY_LOG_WRITE_FAILED`。不能留下沒有 log 的寫入，否則結案檢查會把它當成工具外的修改。
 
@@ -430,7 +437,7 @@ src/migrate/memory-store.ts       project.md／receipts → 新格式的遷移
    - 每個 H2 段落 → 一個主題：title 取 H2 文字；slug 取標題裡的 ASCII 英數字轉小寫、其他字元換成 `-`、合併重複的 `-`、頭尾去掉 `-`，最多 48 字元；結果是空字串（例如純中文標題）時用 `topic-<sha256(標題) 前 8 碼>`；重複時加 `-2`、`-3`。
    - `type` 一律 `reference`；`description` 取正文第一個非空行，去掉 markdown 符號後截到 120 字元；`source: migration`；`created`、`updated` 是遷移時間；`verified_at` 空字串；`pinned: false`。
    - code fence 內的 `##` 不算段落標題（用現有的 `lineFenceState`）。
-   - 單一段落超過 `TOPIC_CHAR_LIMIT` 時照樣寫入，不截斷，交給 doctor 回報。遷移不受預算限制。
+   - 單一段落超過該層的 `topicCharLimit` 時照樣寫入，不截斷，交給 doctor 回報。遷移不受預算限制。
 3. **產生索引**，並在 log 為每個主題附加一筆 `kind: "migrate"`（`afterSha` 為寫入後的 sha）。
 4. **收據**：對每份收據，如果對應任務目前在 `ARCHIVING`，而且收據通過舊版 `validateReceiptForCompletion` 的規則（這段邏輯要搬進遷移模組作為私有函式，舊檔刪除後仍然可用），就在 log 附加 `kind: "disposition"`、`outcome: "legacy-receipt"`、`legacyReceiptId`。其他收據不轉換。
 5. **改名保留**：`project.md` → `project.md.migrated-<時間戳>`，`receipts/` → `receipts.migrated-<時間戳>`，時間戳格式同現有搬遷。
@@ -463,7 +470,7 @@ src/migrate/memory-store.ts       project.md／receipts → 新格式的遷移
 | 工具 | 變更 |
 | --- | --- |
 | `workflow_bootstrap` | `REFS.project` 改成 `.ultrawork/memory/MEMORY.md`；`mode: "project"` 改成回傳兩層索引（不再讀 `project.md`）；`l1_summary.project_md_size` 改成 `memory_index_chars: { project, global }`；說明文字同步修改 |
-| `workflow_l1_check` | 移除 `project.md` frontmatter `limit` 政策相關檢查；改查兩層索引是否超過 `INDEX_CHAR_LIMIT`、是否有主題超過 `TOPIC_CHAR_LIMIT`；成本估算改用索引大小 |
+| `workflow_l1_check` | 移除 `project.md` frontmatter `limit` 政策相關檢查；改查兩層索引是否超過該層的 `indexCharLimit`、是否有主題超過該層的 `topicCharLimit`；成本估算改用索引大小 |
 | `workflow_doctor`、`workflow_health_check` | `memory_budget` 改成 `{ layers: { project: {...}, global: {...} } }`，每層有 `index_chars`、`index_limit`、`topics`、`oversized_topics`、`pinned`、`status`；`project.md exists` 檢查改成 `Memory Store`（沒有記憶不算失敗）；新增 `Memory Budget`（任一層超過預算就 warn；遷移產生的超大主題也走這條，不影響 `ok`）、`Memory Log Integrity`（hash 鏈與工具外修改，warn；主題讀不到時也算未通過）、`Memory Pending Notes`（超過 10 筆未整理就 warn）、`Memory Migration`（`project.md` 還在但沒有遷移標記就 warn，附失敗原因）、`Memory Writer Config`（`writerAgents` 為空就 warn）；`Memory Module Switch` 的說明文字更新 |
 | `ultrawork_selftest` | `SKIP_TOOLS` 移除舊工具，加入 `memory-write`、`memory-note`、`memory-task-close`（會寫檔），以及 `memory-extract`、`memory-maintain`（限 writer agent），各附原因 |
 | `inventory.ts` | 工具清單換成新的 7 個（共 49 個）；分類 `memory_receipt`、`project_memory` 改成 `memory_query`（search、read）與 `memory_curation`（其餘 5 個），分類總數維持 11；來源路徑改成 `tools/*.ts`；hook 仍是 6 個 |
@@ -520,5 +527,5 @@ src/migrate/memory-store.ts       project.md／receipts → 新格式的遷移
 - **快照與即時性。** 工作階段中途寫入的記憶，要到下個工作階段才會出現在注入內容裡。這是為了 prefix cache 刻意的取捨；需要最新內容時用 `memory-read`。
 - **hash 鏈的能力邊界。** 它能發現手改，不能阻止有檔案寫入權的 agent 重算整條鏈。README 要照實寫。
 - **writer 身分依賴 `context.agent`。** OpenCode 若在某些路徑不提供 agent，這些路徑一律被當成非 writer。實作時要用 fake context 測試有 agent 與沒有 agent 兩種情況。
-- **索引預算可能擋住寫入。** `INDEX_CHAR_LIMIT` 太小會讓 memorizer 頻繁被擋；遇到時先回報使用者再調整常數，不要自行放寬。
+- **索引預算可能擋住寫入。** `indexCharLimit` 太小會讓 memorizer 頻繁被擋；遇到時先回報使用者再調整設定，不要自行放寬。
 - **遷移後的主題品質。** 自動拆出的主題 `type` 一律是 `reference`，`description` 是機械截取的，建議遷移後請 memorizer 跑一次維護模式整理。

@@ -18,6 +18,7 @@ import type { ModuleDefinition } from "../types.ts";
 import { createWorkflowRuntime } from "../workflow/runtime/v2-runtime.ts";
 import { createTaskContentReadTool } from "../workflow/tools/task-content.ts";
 import { memoryLayers } from "./layers.ts";
+import { budgetForLayer } from "./constants.ts";
 import { resolveSessionDirectory } from "./session-root.ts";
 import { createMemorySnapshotStore, MEMORY_MARKER, renderMemorySnapshot } from "./snapshot.ts";
 import { createMemoryExtractTool } from "./tools/memory-extract.ts";
@@ -43,6 +44,12 @@ export const memoryModule: ModuleDefinition = {
     const deps: MemoryToolDeps = {
       globalRoot,
       writerAgents: [...settings.memory.writerAgents],
+      // 手刻的 settings（例如測試）可能缺 budget：走 budgetForLayer 退回預設，
+      // 與其他使用端同一條邊界（見 constants.ts 的說明）。
+      budgets: {
+        global: { ...budgetForLayer(settings.memory.budget, "global") },
+        project: { ...budgetForLayer(settings.memory.budget, "project") },
+      },
       resolveRoot: (context) => resolveSessionDirectory(ctx, context),
       ensureMigrated: ensureMemoryStoreMigrated,
       async taskMaterials(taskId, root, context): Promise<TaskMaterials | null> {
@@ -102,7 +109,7 @@ export const memoryModule: ModuleDefinition = {
         const text = await snapshot(event.sessionID, async () => {
           // 舊專案第一次開工作階段就先遷移；遷移失敗時只注入全域層，不擋工作階段。
           const migrated = await ensureMemoryStoreMigrated(root);
-          return renderMemorySnapshot(migrated ? layers : layers.filter((layer) => layer.layer !== "project"));
+          return renderMemorySnapshot(migrated ? layers : layers.filter((layer) => layer.layer !== "project"), deps.budgets);
         });
         event.system.push({ type: "text", text });
       } catch {

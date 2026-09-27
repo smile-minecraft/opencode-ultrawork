@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { defineTool, type ToolExecutionContext } from "../../../kit/define-tool.ts";
 import { jsonResult } from "../../../kit/json.ts";
+import { budgetForLayer, type MemoryBudgets, type MemoryLayerBudget } from "../constants.ts";
 import { MemoryError, memoryLayers, type MemoryLayer } from "../layers.ts";
 
 /** 記憶工具需要的最小任務形狀；完整欄位由 workflow 的註冊檔提供。 */
@@ -31,6 +32,11 @@ export interface MemoryToolDeps {
   globalRoot: string;
   /** 允許寫記憶的 agent（設定 `memory.writerAgents`）。 */
   writerAgents: readonly string[];
+  /**
+   * 兩層各自的預算（設定 `memory.budget`，註冊時從合併後的設定快照）。
+   * 不給時用內建預設（舊的呼叫端照常運作）。
+   */
+  budgets?: MemoryBudgets;
   /** 第一次存取某個根目錄時觸發舊資料遷移；測試可以不給。 */
   ensureMigrated?: (root: string) => Promise<unknown>;
   /** 讀取目前專案的任務與相關材料；任務不存在或不屬於目前專案時回 null。 */
@@ -39,6 +45,16 @@ export interface MemoryToolDeps {
 
 export const layerSchema = z.enum(["project", "global"]);
 export const allLayersSchema = z.enum(["project", "global", "all"]);
+
+/**
+ * 取出某一層的預算：設定沒給或值壞掉時退回內建預設（見 `budgetForLayer`）。
+ *
+ * 每個使用端都走這裡拿「它這一層」對應的預算：寫入檢查、筆記、extract、
+ * maintain、快照注入、診斷回報各自按解析到的層取值，不共用單一上限。
+ */
+export function budgetForDepsLayer(deps: MemoryToolDeps, layer: "project" | "global"): MemoryLayerBudget {
+  return budgetForLayer(deps.budgets, layer);
+}
 
 /**
  * writer 專用功能的權限檢查。身分取自工具執行 context 的 `agent`；

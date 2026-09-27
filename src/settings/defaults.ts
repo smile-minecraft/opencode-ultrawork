@@ -4,6 +4,8 @@
  * 全域與專案的 ultrawork.jsonc 共用同一種格式，專案層只寫要覆寫的部分。
  */
 
+import { defaultMemoryBudgets, type MemoryBudgets } from "../modules/memory/constants.ts";
+
 export const MODULE_KEYS = [
   "search",
   "verification",
@@ -35,7 +37,7 @@ export interface UltraworkSettings {
     /** 能呼叫 change-scope-check 的 agent；預設 build 與 ultra。 */
     scopeCheckAllowedAgents: string[];
   };
-  memory: { writerAgents: string[]; inject: boolean };
+  memory: { writerAgents: string[]; inject: boolean; budget: MemoryBudgets };
   workflow: {
     completion: {
       /** memory 模組開啟時預設要求記憶處置；關閉時由完成前檢查自行放行。 */
@@ -70,7 +72,7 @@ export const DEFAULT_SETTINGS: UltraworkSettings = {
     runAllowedAgents: ["momus"],
     scopeCheckAllowedAgents: ["build", "ultra"],
   },
-  memory: { writerAgents: ["memorizer"], inject: true },
+  memory: { writerAgents: ["memorizer"], inject: true, budget: defaultMemoryBudgets() },
   workflow: {
     completion: {
       requireMemoryDisposition: true,

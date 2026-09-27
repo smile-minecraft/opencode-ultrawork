@@ -10,7 +10,7 @@
  */
 
 import type { KeyValueStorage } from "../../state/store.ts";
-import { INDEX_CHAR_LIMIT, PINNED_INJECT_BUDGET } from "./constants.ts";
+import { budgetForLayer, type MemoryBudgets } from "./constants.ts";
 import { newestFirst, renderIndex } from "./index-render.ts";
 import type { MemoryLayer } from "./layers.ts";
 import { listTopics } from "./topic.ts";
@@ -28,8 +28,10 @@ const GUIDANCE = [
 /**
  * 產生注入文字：標記行、使用準則，接著依層（全域在前）放索引與 pinned 正文。
  * 兩層都沒有主題時只放一行說明，不放準則全文，省下每次請求的 token。
+ *
+ * 索引截斷與 pinned 正文預算都用「該層」的設定（`budgets` 沒給時用內建預設）。
  */
-export function renderMemorySnapshot(layers: MemoryLayer[]): string {
+export function renderMemorySnapshot(layers: MemoryLayer[], budgets?: MemoryBudgets): string {
   const data = layers.map((layer) => ({ layer, topics: listTopics(layer) }));
   if (data.every(({ topics }) => topics.length === 0)) {
     return `${MEMORY_MARKER}\n目前沒有記憶，可用 memory-search 搜尋。`;
@@ -38,16 +40,17 @@ export function renderMemorySnapshot(layers: MemoryLayer[]): string {
   const lines = [MEMORY_MARKER, ...GUIDANCE];
   for (const { layer, topics } of data) {
     if (topics.length === 0) continue;
+    const budget = budgetForLayer(budgets, layer.layer);
     const index = renderIndex(topics, layer.layer);
-    lines.push(index.slice(0, INDEX_CHAR_LIMIT));
-    if (index.length > INDEX_CHAR_LIMIT) lines.push("索引超過預算，其餘主題請用 memory-search 查。");
+    lines.push(index.slice(0, budget.indexCharLimit));
+    if (index.length > budget.indexCharLimit) lines.push("索引超過預算，其餘主題請用 memory-search 查。");
 
     // pinned 正文依 updated 新到舊放入；放不下的那一篇起全部略過，不截斷主題正文。
     let used = 0;
     let budgetReached = false;
     const omitted: string[] = [];
     for (const topic of topics.filter((item) => item.frontmatter.pinned).sort(newestFirst)) {
-      if (budgetReached || used + topic.body.length > PINNED_INJECT_BUDGET) {
+      if (budgetReached || used + topic.body.length > budget.pinnedInjectBudget) {
         budgetReached = true;
         omitted.push(topic.topic);
         continue;

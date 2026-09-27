@@ -219,7 +219,7 @@ export function createWorkflowHealthCheckTool(deps: DiagnosticsDeps) {
       check("tasks.json exists", existsSync(paths.TASKS_JSON), paths.TASKS_JSON);
 
       // ── 記憶體預算（與 doctor 共用同一份收集邏輯）──
-      const budget = collectMemoryBudget(paths, deps.globalConfigDir);
+      const budget = collectMemoryBudget(paths, deps.globalConfigDir, deps.settings.memory.budget);
       result.memory_budget = budget.memory_budget;
       warnings.push(...budget.warnings);
       result.checks.push(...budget.checks);

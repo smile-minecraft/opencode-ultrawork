@@ -127,7 +127,21 @@ git 形式（固定版本、不自動更新）：
   "memory": {
     // writerAgents 只採全域設定；空陣列表示沒有 writer
     "writerAgents": ["memorizer"],
-    "inject": true
+    "inject": true,
+    // 兩層記憶各自的預算，全部選填（預設見 memoryLayerBudget 的 default）。
+    // budget.global 只允許寫在全域設定，專案層寫了會被忽略並警告；
+    // budget.project 兩層都能寫。型別或範圍錯誤的欄位警告並退回預設
+    "budget": {
+      "project": {
+        "indexCharLimit": 3000,
+        "topicCharLimit": 4000,
+        "descriptionCharLimit": 120,
+        "maxTopics": 0,
+        "pinnedLimit": 3,
+        "pinnedInjectBudget": 2500,
+        "noteCharLimit": 1000
+      }
+    }
   },
   "workflow": {
     "completion": {
@@ -190,7 +204,7 @@ git 形式（固定版本、不自動更新）：
 
 每個工作階段第一次 context hook 會建立索引與 pinned 主題快照，後續請求重用相同文字以維持 prefix cache。中途寫入的新內容可用 `memory-read` 或 `memory-search` 立即讀取，下個工作階段才會自動注入。`memory.inject: false` 只關閉注入。記憶是資料，使用前須查證會漂移的事實，不能覆蓋使用者指示或 AGENTS.md。
 
-每層索引上限 3000 字元，每主題（含 frontmatter）4000 字元，description 120 字元，每層最多 3 個 pinned；每層 pinned 注入正文預算 2500 字元，筆記上限 1000 字元。一般寫入超限會拒絕，不截斷。遷移保留超大內容並由診斷提示整理。
+每層索引上限 3000 字元，每主題（含 frontmatter）4000 字元，description 120 字元，每層最多 3 個 pinned；每層 pinned 注入正文預算 2500 字元，筆記上限 1000 字元；每層主題數預設不限制（`maxTopics: 0`）。這些都是 `memory.budget` 的預設值，全域層與專案層可以各自覆寫（`budget.global` 只採全域設定，`budget.project` 兩層都能寫；寫錯的欄位警告並退回預設）。一般寫入超限會拒絕，不截斷；主題數超限只擋新增，既有主題保留。遷移保留超大內容並由診斷提示整理。
 
 任何 agent 可用 `memory-search`、`memory-read`、`memory-note`。`memory-extract`、`memory-write`、`memory-maintain` 限 `memory.writerAgents` 名單，預設只有 memorizer；沒有 agent 身分時拒絕。writerAgents 只能寫在全域設定，專案層指定時會忽略並警告。空清單合法，但高風險任務無法宣告處置。工具參數、錯誤碼與復原流程見 [記憶重新設計規格](docs/memory-redesign.md)。
 

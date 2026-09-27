@@ -164,7 +164,7 @@ test("hook 標記不重複，inject false 不掛 hook，unsafe root 略過", asy
   const off = createFakeV2Context({ directory: r });
   await memoryModule.register({
     ctx: off.ctx,
-    settings: { ...DEFAULT_SETTINGS, memory: { writerAgents: ["memorizer"], inject: false } },
+    settings: { ...DEFAULT_SETTINGS, memory: { ...DEFAULT_SETTINGS.memory, inject: false } },
   });
   expect(off.sessionHooks.has("context")).toBe(false);
   const unsafe = createFakeV2Context({ directory: "/" });

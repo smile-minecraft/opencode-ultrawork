@@ -179,6 +179,63 @@
           "type": "boolean",
           "default": true,
           "description": "每個工作階段開場注入兩層記憶的索引與 pinned 主題（每個工作階段只算一次，之後固定不變）。"
+        },
+        "budget": {
+          "type": "object",
+          "description": "兩層記憶各自的預算（見 memoryLayerBudget）。",
+          "properties": {
+            "global": {
+              "$ref": "#/$defs/memoryLayerBudget",
+              "description": "全域層記憶的額度，只採全域設定檔的值。"
+            },
+            "project": {
+              "$ref": "#/$defs/memoryLayerBudget",
+              "description": "專案層記憶的額度，全域與專案設定檔都能寫。"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "memoryLayerBudget": {
+      "type": "object",
+      "description": "單一記憶層的預算：都要是整數；除了 maxTopics 允許 0（不限制）之外都要是正整數，型別或範圍錯誤的欄位在載入時警告並退回預設。搜尋筆數、extract 上限、過時天數、log 大小維持程式常數，不開放設定。",
+      "properties": {
+        "indexCharLimit": {
+          "type": "integer",
+          "default": 3000,
+          "description": "該層 MEMORY.md 索引的字元上限；寫入後會超過就拒絕，不截斷。"
+        },
+        "topicCharLimit": {
+          "type": "integer",
+          "default": 4000,
+          "description": "單一主題檔（含 frontmatter）的字元上限；超過就拒絕寫入。"
+        },
+        "descriptionCharLimit": {
+          "type": "integer",
+          "default": 120,
+          "description": "索引中每行 description 的字元上限。"
+        },
+        "maxTopics": {
+          "type": "integer",
+          "default": 0,
+          "description": "該層最多幾個主題；0 表示不限制。超過只擋新增主題，既有超標主題不刪除，由診斷工具提示。"
+        },
+        "pinnedLimit": {
+          "type": "integer",
+          "default": 3,
+          "description": "該層 pinned 主題數上限。"
+        },
+        "pinnedInjectBudget": {
+          "type": "integer",
+          "default": 2500,
+          "description": "該層注入 pinned 正文的總字元預算；超過時截斷展示並附說明（原檔不受影響）。"
+        },
+        "noteCharLimit": {
+          "type": "integer",
+          "default": 1000,
+          "description": "單筆 memory-note 的字元上限。"
         }
       },
       "additionalProperties": false

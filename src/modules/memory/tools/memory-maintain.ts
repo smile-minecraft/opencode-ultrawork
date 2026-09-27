@@ -12,7 +12,7 @@ import { existsSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { z } from "zod";
 import { queryTerms } from "../../../kit/text-search.ts";
-import { INDEX_CHAR_LIMIT, STALE_DAYS, TOPIC_CHAR_LIMIT, UNUSED_DAYS } from "../constants.ts";
+import { STALE_DAYS, UNUSED_DAYS, budgetForLayer, type MemoryBudgets, type MemoryLayerBudget } from "../constants.ts";
 import { mismatchedTopics } from "../disposition.ts";
 import { renderIndex } from "../index-render.ts";
 import { MemoryError, memoryPath, readOptional, withMemoryLock, type MemoryLayer } from "../layers.ts";
@@ -33,7 +33,8 @@ export interface MaintenanceIssue {
 }
 
 /** 一層的維護報告（唯讀）；doctor 不直接用它，memorizer 透過 report 模式取得。 */
-export function maintenanceReport(layer: MemoryLayer) {
+export function maintenanceReport(layer: MemoryLayer, budgets?: MemoryBudgets) {
+  const budget: MemoryLayerBudget = budgetForLayer(budgets, layer.layer);
   const topics = listTopics(layer);
   const entries = readLog(layer);
   const index = renderIndex(topics, layer.layer);
@@ -49,7 +50,10 @@ export function maintenanceReport(layer: MemoryLayer) {
   const add = (kind: string, detail: string, action: string, topic?: string) =>
     issues.push({ kind, detail, action, ...(topic ? { topic } : {}) });
 
-  if (index.length > INDEX_CHAR_LIMIT) add("index-budget", `索引 ${index.length} 字元，超過 ${INDEX_CHAR_LIMIT}`, "合併主題或精簡 description");
+  if (index.length > budget.indexCharLimit) add("index-budget", `索引 ${index.length} 字元，超過 ${budget.indexCharLimit}`, "合併主題或精簡 description");
+  if (budget.maxTopics > 0 && topics.length > budget.maxTopics) {
+    add("topic-count", `主題 ${topics.length} 個，超過上限 ${budget.maxTopics}`, "合併或封存主題；既有主題不會自動刪除");
+  }
   if (topics.length > 0 && readOptional(memoryPath(layer, "MEMORY.md")) !== index) {
     add("index-mismatch", "MEMORY.md 與主題內容不一致", "下一次 memory-write 會重建索引");
   }
@@ -60,7 +64,7 @@ export function maintenanceReport(layer: MemoryLayer) {
 
   const now = Date.now();
   for (const topic of topics) {
-    if (topic.size > TOPIC_CHAR_LIMIT) add("topic-budget", `主題 ${topic.size} 字元，超過 ${TOPIC_CHAR_LIMIT}`, "拆成較小的主題", topic.topic);
+    if (topic.size > budget.topicCharLimit) add("topic-budget", `主題 ${topic.size} 字元，超過 ${budget.topicCharLimit}`, "拆成較小的主題", topic.topic);
     const verifiedAt = Date.parse(topic.frontmatter.verified_at || topic.frontmatter.updated);
     if (now - verifiedAt > STALE_DAYS * DAY_MS) add("stale", `超過 ${STALE_DAYS} 天沒有核對`, "查證現況後用 memory-write 的 verify 或 update", topic.topic);
     const lastRead = Date.parse(usage[topic.topic]?.lastReadAt ?? topic.frontmatter.created);
@@ -93,7 +97,7 @@ export function maintenanceReport(layer: MemoryLayer) {
   return {
     layer: layer.layer,
     indexChars: index.length,
-    indexLimit: INDEX_CHAR_LIMIT,
+    indexLimit: budget.indexCharLimit,
     topics: topics.length,
     pinned: topics.filter((topic) => topic.frontmatter.pinned).length,
     issues,
@@ -117,7 +121,12 @@ export function createMemoryMaintainTool(deps: MemoryToolDeps) {
     async (input, context) => {
       requireWriter(deps, context);
       const layers = await resolveLayers(deps, context, input.layer);
-      if (input.mode === "report") return { ok: true, layers: layers.map(maintenanceReport) };
+      if (input.mode === "report") {
+        return {
+          ok: true,
+          layers: layers.map((layer) => maintenanceReport(layer, deps.budgets)),
+        };
+      }
 
       if (!input.reason?.trim()) throw new MemoryError("REASON_REQUIRED", "dismiss-notes 與 reseal-log 都必須提供 reason。");
       if (input.mode === "dismiss-notes" && !input.noteSeqs?.length) {

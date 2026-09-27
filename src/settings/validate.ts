@@ -11,6 +11,7 @@
  */
 
 import { DEFAULT_SETTINGS, MODULE_KEYS, type ModuleKey, type UltraworkSettings } from "./defaults.ts";
+import { type MemoryBudgets, type MemoryLayerBudget } from "../modules/memory/constants.ts";
 import { isPlainObject } from "./merge.ts";
 
 export interface SanitizeResult {
@@ -243,7 +244,14 @@ export function sanitizeSettings(raw: unknown): SanitizeResult {
 }
 
 function sanitizeMemory(raw: unknown, warnings: string[]): UltraworkSettings["memory"] {
-  const memory = { writerAgents: [...DEFAULT_SETTINGS.memory.writerAgents], inject: DEFAULT_SETTINGS.memory.inject };
+  const memory: UltraworkSettings["memory"] = {
+    writerAgents: [...DEFAULT_SETTINGS.memory.writerAgents],
+    inject: DEFAULT_SETTINGS.memory.inject,
+    budget: {
+      global: { ...DEFAULT_SETTINGS.memory.budget.global },
+      project: { ...DEFAULT_SETTINGS.memory.budget.project },
+    },
+  };
   if (raw === undefined) return memory;
   if (!isPlainObject(raw)) {
     warnInvalidType(warnings, "memory", raw, memory);
@@ -258,8 +266,70 @@ function sanitizeMemory(raw: unknown, warnings: string[]): UltraworkSettings["me
     if (typeof raw.inject === "boolean") memory.inject = raw.inject;
     else warnInvalidType(warnings, "memory.inject", raw.inject, true);
   }
+  if (raw.budget !== undefined) {
+    memory.budget = sanitizeMemoryBudget(raw.budget, warnings);
+  }
   for (const key of Object.keys(raw)) {
-    if (key !== "writerAgents" && key !== "inject") warnUnknownKey(warnings, "memory", key);
+    if (key !== "writerAgents" && key !== "inject" && key !== "budget") warnUnknownKey(warnings, "memory", key);
   }
   return memory;
+}
+
+/**
+ * 每層預算的七個欄位：正整數才收（`maxTopics` 允許 0＝不限制），
+ * 型別或範圍錯誤退回該欄位的預設值並警告，不讓壞值流進模組。
+ */
+const MEMORY_BUDGET_FIELDS: ReadonlyArray<{ key: keyof MemoryLayerBudget; allowZero: boolean }> = [
+  { key: "indexCharLimit", allowZero: false },
+  { key: "topicCharLimit", allowZero: false },
+  { key: "descriptionCharLimit", allowZero: false },
+  { key: "maxTopics", allowZero: true },
+  { key: "pinnedLimit", allowZero: false },
+  { key: "pinnedInjectBudget", allowZero: false },
+  { key: "noteCharLimit", allowZero: false },
+];
+
+function sanitizeMemoryBudget(raw: unknown, warnings: string[]): MemoryBudgets {
+  const fallback = DEFAULT_SETTINGS.memory.budget;
+  if (!isPlainObject(raw)) {
+    warnInvalidType(warnings, "memory.budget", raw, fallback);
+    return { global: { ...fallback.global }, project: { ...fallback.project } };
+  }
+  const budget: MemoryBudgets = {
+    global: sanitizeMemoryLayerBudget(raw["global"], "memory.budget.global", warnings, fallback.global),
+    project: sanitizeMemoryLayerBudget(raw["project"], "memory.budget.project", warnings, fallback.project),
+  };
+  for (const key of Object.keys(raw)) {
+    if (key !== "global" && key !== "project") warnUnknownKey(warnings, "memory.budget", key);
+  }
+  return budget;
+}
+
+function sanitizeMemoryLayerBudget(
+  raw: unknown,
+  path: string,
+  warnings: string[],
+  fallback: MemoryLayerBudget,
+): MemoryLayerBudget {
+  const layer = { ...fallback };
+  if (raw === undefined) return layer;
+  if (!isPlainObject(raw)) {
+    warnInvalidType(warnings, path, raw, fallback);
+    return layer;
+  }
+  for (const { key, allowZero } of MEMORY_BUDGET_FIELDS) {
+    const value = raw[key];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || (value === 0 && !allowZero)) {
+      warnInvalidType(warnings, `${path}.${key}`, value, fallback[key]);
+      continue;
+    }
+    layer[key] = value;
+  }
+  for (const key of Object.keys(raw)) {
+    if (!MEMORY_BUDGET_FIELDS.some((field) => field.key === key)) {
+      warnUnknownKey(warnings, path, key);
+    }
+  }
+  return layer;
 }

@@ -7,13 +7,13 @@
  */
 
 import { z } from "zod";
-import { EXTRACT_CONTENT_LIMIT, INDEX_CHAR_LIMIT } from "../constants.ts";
+import { EXTRACT_CONTENT_LIMIT } from "../constants.ts";
 import { renderIndex } from "../index-render.ts";
 import { MemoryError } from "../layers.ts";
 import { pendingNotes, readLog } from "../log.ts";
 import { searchMemory } from "../search.ts";
 import { listTopics } from "../topic.ts";
-import { memoryTool, requireWriter, resolveLayers, type MemoryToolDeps } from "./shared.ts";
+import { budgetForDepsLayer, memoryTool, requireWriter, resolveLayers, type MemoryToolDeps } from "./shared.ts";
 
 const PENDING_NOTE_LIMIT = 20;
 const CANDIDATE_LIMIT = 8;
@@ -51,7 +51,7 @@ export function createMemoryExtractTool(deps: MemoryToolDeps) {
         layers: logs.map(({ layer, entries }) => ({
           layer: layer.layer,
           indexChars: renderIndex(listTopics(layer), layer.layer).length,
-          indexLimit: INDEX_CHAR_LIMIT,
+          indexLimit: budgetForDepsLayer(deps, layer.layer).indexCharLimit,
           writes: entries.filter((entry) => entry?.taskId === input.taskId && entry.kind === "write"),
           disposition: entries.filter((entry) => entry?.taskId === input.taskId && entry.kind === "disposition").at(-1),
         })),
