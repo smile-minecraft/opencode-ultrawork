@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { isSensitivePath, isUnsafeRoot } from "../../../src/kit/path-guard.ts";
@@ -19,9 +19,25 @@ describe("kit isUnsafeRoot：唯一的黑名單判定", () => {
     expect(isUnsafeRoot("/Volumes")).toBe(true);
   });
 
-  test("家目錄本身是 unsafe，家目錄下的一般子目錄不是", () => {
+  test("家目錄本身是 unsafe，存在祖先下的一般子目錄不是", () => {
     expect(isUnsafeRoot(homedir())).toBe(true);
-    expect(isUnsafeRoot(join(homedir(), ".config", "opencode"))).toBe(false);
+    // 家目錄下的子路徑若不存在（例如 CI 乾淨家目錄的 ~/.config/opencode），
+    // 最近的存在祖先就是家目錄本身，會走 fail closed；所以「一般子目錄不是
+    // unsafe」改用暫存目錄下實際存在的路徑驗，不依賴執行環境的家目錄內容。
+    const dir = mkdtempSync(join(tmpdir(), "kit-unsafe-"));
+    try {
+      mkdirSync(join(dir, "sub"));
+      expect(isUnsafeRoot(join(dir, "sub"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("不存在、只能解析到家目錄的路徑判 unsafe（fail closed）", () => {
+    // 不存在的子路徑最近的存在祖先就是家目錄本身，無法確認它是獨立存在的
+    // 子目錄 → 無法確認 containment，一律判 unsafe。這個語意是刻意的，
+    // 不能拿真實家目錄下存在的路徑來反證它。
+    expect(isUnsafeRoot(join(homedir(), ".ultrawork-test-nonexistent-8f3c2a"))).toBe(true);
   });
 
   test("暫存測試目錄不是 unsafe", () => {
