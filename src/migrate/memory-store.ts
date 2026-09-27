@@ -10,7 +10,8 @@
  *   code fence 裡的 `##` 不算標題。遷移不受預算限制，超大段落照樣寫入，交給 doctor 回報。
  * - 目前在 ARCHIVING、而且收據通過舊版檢查規則的任務，轉成 `legacy-receipt` 處置，
  *   升級當下正在收尾的任務才不會被卡住。其他收據不轉換。
- * - 舊檔改名成 `<原名>.migrated-<時間戳>` 保留，永不刪除。
+ * - 舊檔改名成 `<原名>.migrated-<時間戳>` 保留，永不刪除；目標已存在就加
+ *   `-2`、`-3`…找下一個未被占用的名稱，絕不覆蓋既有檔案。
  * - 任一步失敗就停止、不寫標記；下次觸發重跑時，已存在的主題跳過不覆寫，可以冪等收斂。
  * - 沿路任何一段是 symlink 就整段失敗（`assertContainedPath`），不讀層外的資料。
  */
@@ -29,6 +30,28 @@ export const MEMORY_MIGRATION_MARKER = ".migrated-from-project-md.json";
 
 const SLUG_MAX_LENGTH = 48;
 const DESCRIPTION_MAX_LENGTH = 120;
+
+/**
+ * 封存改名可用的候選上限（含不帶後綴的原本名稱）。時間戳精確到毫秒，
+ * 自然碰撞幾乎不可能；這個上限只防預先占位的極端情況，用完就讓遷移
+ * 失敗（不寫標記、下次重試），絕不退化成覆蓋。
+ */
+const MAX_ARCHIVE_CANDIDATES = 100;
+
+/** 找下一個未被占用的封存名稱：先試原本名稱，再試 `-2`、`-3`…。 */
+function uniqueArchivePath(root: string, path: string, timestamp: string): string {
+  const base = `${path}.migrated-${timestamp}`;
+  let archive = assertContainedPath(root, base);
+  let suffix = 2;
+  while (existsSync(archive)) {
+    if (suffix > MAX_ARCHIVE_CANDIDATES) {
+      throw new Error(`封存目標 ${archive} 已存在且候選名稱已用完，遷移中止以免覆蓋既有檔案。`);
+    }
+    archive = assertContainedPath(root, `${base}-${suffix}`);
+    suffix++;
+  }
+  return archive;
+}
 
 /** 最近一次遷移失敗的原因（依根目錄）；doctor 用它回報，成功後清掉。 */
 const failures = new Map<string, string>();
@@ -226,7 +249,7 @@ export async function ensureMemoryStoreMigrated(root: string): Promise<boolean> 
 
       for (const path of [projectMd, receiptsDir]) {
         if (!existsSync(path)) continue;
-        const archive = assertContainedPath(root, `${path}.migrated-${timestamp}`);
+        const archive = uniqueArchivePath(root, path, timestamp);
         renameSync(path, archive);
         archives.push(archive.slice(root.length + 1));
       }

@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureMemoryStoreMigrated, splitLegacyMemory } from "../../../../src/migrate/memory-store.ts";
+import { ensureMemoryStoreMigrated, MEMORY_MIGRATION_MARKER, splitLegacyMemory } from "../../../../src/migrate/memory-store.ts";
 import { memoryLayer, memoryPath } from "../../../../src/modules/memory/layers.ts";
 import { readLog } from "../../../../src/modules/memory/log.ts";
 import { listTopics, renderTopic, type TopicFrontmatter } from "../../../../src/modules/memory/topic.ts";
@@ -79,6 +79,43 @@ test("遷移僅轉 ARCHIVING 的有效收據，改名保留全部收據", async 
   expect(await ensureMemoryStoreMigrated(r)).toBe(true);
   expect(readLog(memoryLayer(r))).toHaveLength(1);
   expect(readLog(memoryLayer(r))[0]?.outcome).toBe("legacy-receipt");
+});
+test("遷移封存目標已存在時不覆蓋，改用未被占用的名稱", async () => {
+  const r = root();
+  mkdirSync(join(r, ".ultrawork"));
+  // 遷移用 `new Date().toISOString()` 產生時間戳；凍結時間才能預先造出碰撞的目標名稱。
+  // 凍結期間只支援無參數建構（遷移路徑上只有這種用法），結束後立刻還原。
+  const RealDate = globalThis.Date;
+  const fixed = new RealDate("2026-09-27T12:00:00.000Z").getTime();
+  class FrozenDate extends RealDate {
+    constructor() {
+      super(fixed);
+    }
+    static now(): number {
+      return fixed;
+    }
+  }
+  globalThis.Date = FrozenDate as unknown as DateConstructor;
+  try {
+    const timestamp = "2026-09-27T12-00-00-000Z";
+    const sentinel = "既有封存，不可覆蓋";
+    writeFileSync(join(r, `.ultrawork/project.md.migrated-${timestamp}`), sentinel);
+    const raw = "# Overview\n前言\n";
+    writeFileSync(join(r, ".ultrawork/project.md"), raw);
+    expect(await ensureMemoryStoreMigrated(r)).toBe(true);
+    // 既有封存檔內容不變。
+    expect(readFileSync(join(r, `.ultrawork/project.md.migrated-${timestamp}`), "utf8")).toBe(sentinel);
+    // 新的封存用下一個未被占用的名稱，內容是原本的 project.md。
+    const actual = `project.md.migrated-${timestamp}-2`;
+    expect(readFileSync(join(r, ".ultrawork", actual), "utf8")).toBe(raw);
+    // 遷移標記的 archives 反映實際使用的名稱。
+    const marker = JSON.parse(readFileSync(memoryPath(memoryLayer(r), MEMORY_MIGRATION_MARKER), "utf8")) as {
+      archives: string[];
+    };
+    expect(marker.archives).toContain(`.ultrawork/${actual}`);
+  } finally {
+    globalThis.Date = RealDate;
+  }
 });
 test("遷移拒絕 symlink，不改外部資料", async () => {
   const r = root(),
