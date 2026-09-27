@@ -133,11 +133,11 @@ verified_at: 2026-09-27T08:00:00.000Z
 
 | 欄位 | 預設 | 用途 |
 | --- | --- | --- |
-| `indexCharLimit` | 3000 | 每層索引上限；寫入後會超過就拒絕 |
-| `topicCharLimit` | 4000 | 每個主題檔（含 frontmatter）上限 |
+| `indexCharLimit` | 3000 | 每層索引上限；寫入後比寫入前更大且超過上限才拒絕（已超標時縮減、刪除、核對仍可寫入） |
+| `topicCharLimit` | 4000 | 每個主題檔（含 frontmatter）上限；寫入後比寫入前更大且超過上限才拒絕（已超標時縮短內容仍可寫入） |
 | `descriptionCharLimit` | 120 | `description` 上限 |
 | `maxTopics` | 0（不限制） | 每層主題數上限；超過只擋新增，既有超標主題不刪除，由診斷提示 |
-| `pinnedLimit` | 3 | 每層 pinned 主題數上限 |
+| `pinnedLimit` | 3 | 每層 pinned 主題數上限；寫入後比寫入前更多且超過上限才拒絕（已超標時取消 pinned 仍可寫入） |
 | `pinnedInjectBudget` | 2500 | 每層注入 pinned 正文的總字元預算 |
 | `noteCharLimit` | 1000 | 單筆筆記上限 |
 
@@ -150,7 +150,7 @@ verified_at: 2026-09-27T08:00:00.000Z
 | `UNUSED_DAYS` | 60 | 超過這麼久沒被讀就列為可汰除候選 |
 | `LOG_WARN_BYTES` | 5 MB | log 超過時 doctor 提醒 |
 
-超過上限一律**拒絕並說明**，永不自動截斷使用者內容（注入時的截斷除外，見 6.2）。
+寫入會讓該項變大且超過上限時**拒絕並說明**，永不自動截斷使用者內容（注入時的截斷除外，見 6.2）；不增加該項的寫入（縮減、刪除、核對）即使現況超標也放行。`description` 是單一欄位上限，縮短就會過，不適用放行規則。
 
 ## 5. 模組結構
 
@@ -263,7 +263,8 @@ src/migrate/memory-store.ts       project.md／receipts → 新格式的遷移
 
 參數：`{ content: string; layer?: "project" | "global"; taskId?: string }`，`layer` 預設 `project`。
 
-- `content` 非空、不超過 `NOTE_CHAR_LIMIT`、通過 secret 檢查。
+- `content` 非空、不超過該層 `noteCharLimit`、通過 secret 檢查；超過上限回 `NOTE_TOO_LONG` 並附該層的上限值。
+- 輸入形狀的字數上限取兩層較大者（zod 只能用一個靜態值），真正的把關在解析出層之後：兩層 `noteCharLimit` 不同、且內容長度介於兩者之間時，較嚴格的那層由業務層擋下（`NOTE_TOO_LONG`）。預設兩層上限相同，行為與改動前一致。
 - 在該層 log 附加 `kind: "note"` 的紀錄，回傳 `{ ok: true, seq }`。
 - 筆記是待整理的資料：狀態由後續的 `note-consumed`／`note-dismissed` 紀錄推導，不修改原紀錄。
 
@@ -310,7 +311,7 @@ src/migrate/memory-store.ts       project.md／receipts → 新格式的遷移
 - `delete`：把主題檔移到 `archive/<slug>.<時間戳>.md`，不真的刪除。
 - `verify`：內容不變，只把 `verified_at` 設為現在，用於「核對過，仍然正確」。
 - `preview`：不寫檔、不取鎖；回傳渲染後的主題全文、寫入後的索引大小、pinned 數量，以及所有會擋下 apply 的問題（一次列出）。
-- `apply`：在該層的鎖內依序做：核對 `expectedSha256`（不符回 `SHA_MISMATCH` 並附目前 sha）→ 檢查主題大小、`description` 長度、pinned 數量、寫入後的索引大小（任一超過就拒絕，錯誤碼分別是 `TOPIC_TOO_LARGE`、`DESCRIPTION_TOO_LONG`、`TOPIC_LIMIT_EXCEEDED`、`PINNED_LIMIT_EXCEEDED`、`INDEX_BUDGET_EXCEEDED`）→ secret 檢查（`SECRET_DETECTED`，訊息不得回顯疑似 secret 本身）→ 原子寫入主題檔 → 重新產生索引 → 附加 log 紀錄（`kind: "write"`，每個被整理的筆記再各附加一筆 `note-consumed`）。
+- `apply`：在該層的鎖內依序做：核對 `expectedSha256`（不符回 `SHA_MISMATCH` 並附目前 sha）→ 檢查主題大小、pinned 數量、寫入後的索引大小（總量型三項只在寫入後比寫入前更大且超過上限時拒絕；`description` 長度維持單一欄位上限，超過就拒絕；錯誤碼分別是 `TOPIC_TOO_LARGE`、`DESCRIPTION_TOO_LONG`、`TOPIC_LIMIT_EXCEEDED`、`PINNED_LIMIT_EXCEEDED`、`INDEX_BUDGET_EXCEEDED`）→ secret 檢查（`SECRET_DETECTED`，訊息不得回顯疑似 secret 本身）→ 原子寫入主題檔 → 重新產生索引 → 附加 log 紀錄（`kind: "write"`，每個被整理的筆記再各附加一筆 `note-consumed`）。
 - 回傳 `{ ok: true, layer, topic, op, sha256, seq, indexChars }`。
 - 如果檔案寫入成功、但附加 log 失敗：把主題檔回復成寫入前的位元組並回 `MEMORY_LOG_WRITE_FAILED`。不能留下沒有 log 的寫入，否則結案檢查會把它當成工具外的修改。
 
@@ -437,7 +438,7 @@ src/migrate/memory-store.ts       project.md／receipts → 新格式的遷移
    - 每個 H2 段落 → 一個主題：title 取 H2 文字；slug 取標題裡的 ASCII 英數字轉小寫、其他字元換成 `-`、合併重複的 `-`、頭尾去掉 `-`，最多 48 字元；結果是空字串（例如純中文標題）時用 `topic-<sha256(標題) 前 8 碼>`；重複時加 `-2`、`-3`。
    - `type` 一律 `reference`；`description` 取正文第一個非空行，去掉 markdown 符號後截到 120 字元；`source: migration`；`created`、`updated` 是遷移時間；`verified_at` 空字串；`pinned: false`。
    - code fence 內的 `##` 不算段落標題（用現有的 `lineFenceState`）。
-   - 單一段落超過該層的 `topicCharLimit` 時照樣寫入，不截斷，交給 doctor 回報。遷移不受預算限制。
+   - 單一段落超過該層的 `topicCharLimit` 時照樣寫入，不截斷，交給 doctor 回報。遷移不受預算限制。另外 `description` 是機械截到 120 字元：若該層 `descriptionCharLimit` 設得比 120 小，之後更新那些主題會撞 `DESCRIPTION_TOO_LONG`，需先縮短 description 再更新。
 3. **產生索引**，並在 log 為每個主題附加一筆 `kind: "migrate"`（`afterSha` 為寫入後的 sha）。
 4. **收據**：對每份收據，如果對應任務目前在 `ARCHIVING`，而且收據通過舊版 `validateReceiptForCompletion` 的規則（這段邏輯要搬進遷移模組作為私有函式，舊檔刪除後仍然可用），就在 log 附加 `kind: "disposition"`、`outcome: "legacy-receipt"`、`legacyReceiptId`。其他收據不轉換。
 5. **改名保留**：`project.md` → `project.md.migrated-<時間戳>`，`receipts/` → `receipts.migrated-<時間戳>`，時間戳格式同現有搬遷。

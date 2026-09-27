@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_SETTINGS, MODULE_KEYS } from "../../../../src/settings/defaults.ts";
-import { parseJsonc, stripJsoncComments } from "../../../../src/settings/jsonc.ts";
+import { DEFAULT_MEMORY_BUDGET } from "../../../../src/modules/memory/constants.ts";import { parseJsonc, stripJsoncComments } from "../../../../src/settings/jsonc.ts";
 import {
   REPO_ROOT,
   collectKeywords,
@@ -124,6 +124,16 @@ describe("設定 JSON Schema", () => {
     expect(evidencePack.gatedSubagents!.default).toEqual(
       DEFAULT_SETTINGS.workflow.evidencePack.gatedSubagents,
     );
+  });
+
+  test("memoryLayerBudget 的欄位集合與每個 default 等於 DEFAULT_MEMORY_BUDGET", () => {
+    const defs = schema.$defs as Record<string, Schema>;
+    const budget = defs.memoryLayerBudget.properties as Record<string, Schema>;
+    expect(Object.keys(budget).sort()).toEqual(Object.keys(DEFAULT_MEMORY_BUDGET).sort());
+    for (const key of Object.keys(DEFAULT_MEMORY_BUDGET) as Array<keyof typeof DEFAULT_MEMORY_BUDGET>) {
+      expect(budget[key]!.type).toBe("integer");
+      expect(budget[key]!.default).toBe(DEFAULT_MEMORY_BUDGET[key]);
+    }
   });
 
   test("根層欄位就是 modules / skiller / skills / verification / workflow", () => {

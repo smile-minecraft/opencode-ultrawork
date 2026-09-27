@@ -205,17 +205,17 @@
         "indexCharLimit": {
           "type": "integer",
           "default": 3000,
-          "description": "該層 MEMORY.md 索引的字元上限；寫入後會超過就拒絕，不截斷。"
+          "description": "該層 MEMORY.md 索引的字元上限；只在寫入後比寫入前更大且超過上限時拒絕，不截斷，已超標時的縮減、刪除、核對仍可寫入。"
         },
         "topicCharLimit": {
           "type": "integer",
           "default": 4000,
-          "description": "單一主題檔（含 frontmatter）的字元上限；超過就拒絕寫入。"
+          "description": "單一主題檔（含 frontmatter）的字元上限；只在寫入後比寫入前更大且超過上限時拒絕，已超標時的縮減、刪除、核對仍可寫入。"
         },
         "descriptionCharLimit": {
           "type": "integer",
           "default": 120,
-          "description": "索引中每行 description 的字元上限。"
+          "description": "索引中每行 description 的字元上限；超過就拒絕。"
         },
         "maxTopics": {
           "type": "integer",
@@ -225,7 +225,7 @@
         "pinnedLimit": {
           "type": "integer",
           "default": 3,
-          "description": "該層 pinned 主題數上限。"
+          "description": "該層 pinned 主題數上限；只在增加且超過上限時拒絕，已超標時取消 pinned 或核對仍可寫入。"
         },
         "pinnedInjectBudget": {
           "type": "integer",

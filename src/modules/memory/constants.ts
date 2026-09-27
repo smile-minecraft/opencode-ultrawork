@@ -1,20 +1,24 @@
 /**
  * memory 模組的預算：內建預設值與分層設定形狀（企劃書 `docs/memory-redesign.md` 第 4.5 節）。
  *
- * 超過上限一律拒絕並說明，永不自動截斷使用者內容；唯一的例外是 context 注入：
- * 注入時超過預算會截斷並附說明，因為那只是展示，原檔不受影響。
+ * 此檔是無依賴的共用葉節點：只放常數、型別與純函式，不 import 其他專案模組，
+ * `src/settings/` 可以依賴它（設定載入與驗證讀這裡的預設值）。
+ *
+ * 總量型預算（索引、主題檔、pinned 數）只擋「變大且超標」的寫入，不自動截斷
+ * 使用者內容；現況已超標時的縮減、刪除、核對一律放行。唯一的例外是 context
+ * 注入：注入時超過預算會截斷並附說明，因為那只是展示，原檔不受影響。
  * 下面的常數是「沒寫設定時的預設值」：各層的實際上限走 `memory.budget.{global,project}`
  * 設定，`global` 只採全域設定檔、`project` 兩層都能寫。數值要調整時先問使用者，
  * 不要為了讓寫入通過而放寬。
  */
 
-/** 每層索引 `MEMORY.md` 的字元上限；寫入後會超過就拒絕。 */
+/** 每層索引 `MEMORY.md` 的字元上限；只在寫入後比寫入前更大且超過上限時拒絕。 */
 export const INDEX_CHAR_LIMIT = 3000;
-/** 每個主題檔（含 frontmatter）的字元上限。 */
+/** 每個主題檔（含 frontmatter）的字元上限；只在寫入後比寫入前更大且超過上限時拒絕。 */
 export const TOPIC_CHAR_LIMIT = 4000;
-/** `description` 的字元上限：索引一行一個主題，太長會吃掉索引預算。 */
+/** `description` 的字元上限，超過就拒絕：索引一行一個主題，太長會吃掉索引預算。 */
 export const DESCRIPTION_CHAR_LIMIT = 120;
-/** 每層 pinned 主題數上限。 */
+/** 每層 pinned 主題數上限；只在增加且超過上限時拒絕。 */
 export const PINNED_LIMIT = 3;
 /** 每層注入 pinned 正文的總字元預算。 */
 export const PINNED_INJECT_BUDGET = 2500;

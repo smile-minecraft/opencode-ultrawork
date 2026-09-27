@@ -128,7 +128,12 @@ function prepare(layer: MemoryLayer, input: WriteInput, budget: MemoryLayerBudge
 
   let raw = frontmatter && input.op !== "delete" ? renderTopic(frontmatter, body) : null;
   if (raw !== null) {
-    if (raw.length > budget.topicCharLimit) issue("TOPIC_TOO_LARGE", `主題超過 ${budget.topicCharLimit} 字元，請拆成較小的主題。`);
+    // 總量型預算只擋「變大且超標」：寫入後比寫入前更大、同時超過上限才拒絕。
+    // 寫入前不存在（create）時以 0 起算；現況已超標時的縮減、刪除、核對一律放行。
+    const beforeChars = before === null ? 0 : before.length;
+    if (raw.length > budget.topicCharLimit && raw.length > beforeChars) {
+      issue("TOPIC_TOO_LARGE", `主題超過 ${budget.topicCharLimit} 字元，請拆成較小的主題。`);
+    }
     if (frontmatter!.description.length > budget.descriptionCharLimit) {
       issue("DESCRIPTION_TOO_LONG", `description 不得超過 ${budget.descriptionCharLimit} 字元。`);
     }
@@ -142,7 +147,8 @@ function prepare(layer: MemoryLayer, input: WriteInput, budget: MemoryLayerBudge
     if (raw !== null && containsSecret(raw)) issue("SECRET_DETECTED", "內容含有疑似 secret，請移除敏感資訊。");
   }
 
-  const topics = listTopics(layer).filter((topic) => topic.topic !== input.topic);
+  const existing = listTopics(layer);
+  const topics = existing.filter((topic) => topic.topic !== input.topic);
   // 主題數上限只擋「新增」：更新、核對、封存不增減數量，既有超標的主題
   // 不刪除也不自動裁減，只擋新的寫入並由診斷提示。
   if (input.op === "create" && before === null && budget.maxTopics > 0 && topics.length >= budget.maxTopics) {
@@ -151,8 +157,13 @@ function prepare(layer: MemoryLayer, input: WriteInput, budget: MemoryLayerBudge
   if (raw !== null) topics.push(parseTopic(input.topic, raw));
   const index = renderIndex(topics, layer.layer);
   const pinned = topics.filter((topic) => topic.frontmatter.pinned).length;
-  if (pinned > budget.pinnedLimit) issue("PINNED_LIMIT_EXCEEDED", `每層最多 ${budget.pinnedLimit} 個 pinned 主題。`);
-  if (index.length > budget.indexCharLimit) {
+  // 索引與 pinned 也是總量型：只擋「變大且超標」，寫入前的值以磁碟現況重算。
+  const beforeIndexChars = renderIndex(existing, layer.layer).length;
+  const beforePinned = existing.filter((topic) => topic.frontmatter.pinned).length;
+  if (pinned > budget.pinnedLimit && pinned > beforePinned) {
+    issue("PINNED_LIMIT_EXCEEDED", `每層最多 ${budget.pinnedLimit} 個 pinned 主題。`);
+  }
+  if (index.length > budget.indexCharLimit && index.length > beforeIndexChars) {
     issue("INDEX_BUDGET_EXCEEDED", `寫入後索引會超過 ${budget.indexCharLimit} 字元，請先合併或精簡既有主題的 description。`);
   }
   return { path, before, raw, index, pinned, issues };

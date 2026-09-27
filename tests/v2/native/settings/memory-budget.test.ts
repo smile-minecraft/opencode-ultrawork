@@ -25,8 +25,8 @@ import {
 import { createMemoryWriteTool } from "../../../../src/modules/memory/tools/memory-write.ts";
 import { createMemoryNoteTool } from "../../../../src/modules/memory/tools/memory-note.ts";
 import type { MemoryToolDeps } from "../../../../src/modules/memory/tools/shared.ts";
-import { memoryLayer } from "../../../../src/modules/memory/layers.ts";
-import { listTopics } from "../../../../src/modules/memory/topic.ts";
+import { memoryLayer, memoryPath, readOptional } from "../../../../src/modules/memory/layers.ts";
+import { listTopics, sha256 } from "../../../../src/modules/memory/topic.ts";
 import { renderMemorySnapshot } from "../../../../src/modules/memory/snapshot.ts";
 import { collectMemoryBudget } from "../../../../src/modules/diagnostics/shared.ts";
 import type { Paths } from "../../../../src/modules/workflow/index.ts";
@@ -293,5 +293,138 @@ describe("預算回報反映設定值", () => {
       ["index_chars", "index_limit", "oversized_topics", "pinned", "status", "topics"],
     );
     expect(outcome.memory_budget.layers.global.index_limit).toBe(DEFAULT_MEMORY_BUDGET.indexCharLimit);
+  });
+});
+
+/** 讀取某主題目前檔案內容的 sha256，給 update／delete／verify 的 expectedSha256 用。 */
+function shaOf(r: string, topic: string): string {
+  const raw = readOptional(memoryPath(memoryLayer(r), "topics", `${topic}.md`));
+  if (raw === null) throw new Error(`測試前置失敗：主題 ${topic} 不存在`);
+  return sha256(raw);
+}
+
+describe("超標時不增加的寫入放行", () => {
+  test("索引已超標：delete／verify／縮短 description 放行，新增主題仍擋", async () => {
+    const r = root();
+    const loose = createMemoryWriteTool(depsFor(r, defaultMemoryBudgets()));
+    for (const topic of ["a", "b", "c"]) {
+      expect(await call(loose, baseCreate(topic, { description: `主題${topic}的說明文字內容` }))).toMatchObject({
+        ok: true,
+      });
+    }
+    const tight = createMemoryWriteTool(depsFor(r, budgetsWith({ indexCharLimit: 50 })));
+
+    const preview = await call(tight, {
+      layer: "project",
+      topic: "a",
+      op: "delete",
+      reason: "整理",
+      mode: "preview",
+      expectedSha256: shaOf(r, "a"),
+    });
+    expect((preview.issues as Array<{ code: string }>).map((i) => i.code)).not.toContain("INDEX_BUDGET_EXCEEDED");
+
+    expect(
+      await call(tight, {
+        layer: "project",
+        topic: "a",
+        op: "delete",
+        reason: "整理",
+        mode: "apply",
+        expectedSha256: shaOf(r, "a"),
+      }),
+    ).toMatchObject({ ok: true });
+
+    expect(
+      await call(tight, {
+        layer: "project",
+        topic: "b",
+        op: "verify",
+        mode: "apply",
+        expectedSha256: shaOf(r, "b"),
+      }),
+    ).toMatchObject({ ok: true });
+
+    expect(
+      await call(tight, {
+        layer: "project",
+        topic: "c",
+        op: "update",
+        description: "短",
+        mode: "apply",
+        expectedSha256: shaOf(r, "c"),
+      }),
+    ).toMatchObject({ ok: true });
+
+    const over = await call(tight, baseCreate("d"));
+    expect(over.ok).toBe(false);
+    expect(over.code).toBe("INDEX_BUDGET_EXCEEDED");
+  });
+
+  test("主題檔已超標：縮短內容放行，加長仍擋", async () => {
+    const r = root();
+    const loose = createMemoryWriteTool(depsFor(r, defaultMemoryBudgets()));
+    const longBody = "很長的正文內容".repeat(40);
+    expect(await call(loose, baseCreate("big", { body: longBody }))).toMatchObject({ ok: true });
+    const before = readOptional(memoryPath(memoryLayer(r), "topics", "big.md"))!;
+    // 上限卡在「縮短後」與「原本」之間：縮短版比原本少 279 字元（280 字正文換成 1 字），
+    // 所以縮短後仍超標 21 字元，舊判定會擋、新判定放行；改回長文則兩種判定都擋。
+    const tight = createMemoryWriteTool(depsFor(r, budgetsWith({ topicCharLimit: before.length - 300 })));
+
+    expect(
+      await call(tight, {
+        layer: "project",
+        topic: "big",
+        op: "update",
+        body: "短",
+        mode: "apply",
+        expectedSha256: shaOf(r, "big"),
+      }),
+    ).toMatchObject({ ok: true });
+
+    const over = await call(tight, {
+      layer: "project",
+      topic: "big",
+      op: "update",
+      body: longBody,
+      mode: "apply",
+      expectedSha256: shaOf(r, "big"),
+    });
+    expect(over.ok).toBe(false);
+    expect(over.code).toBe("TOPIC_TOO_LARGE");
+  });
+
+  test("pinned 已超標：不增加 pinned 的更新放行，取消 pinned 放行，再 pin 仍擋", async () => {
+    const r = root();
+    const loose = createMemoryWriteTool(depsFor(r, defaultMemoryBudgets()));
+    expect(await call(loose, baseCreate("a", { pinned: true }))).toMatchObject({ ok: true });
+    expect(await call(loose, baseCreate("b", { pinned: true, description: "短" }))).toMatchObject({ ok: true });
+    const tight = createMemoryWriteTool(depsFor(r, budgetsWith({ pinnedLimit: 1 })));
+
+    expect(
+      await call(tight, {
+        layer: "project",
+        topic: "b",
+        op: "update",
+        title: "新標題",
+        mode: "apply",
+        expectedSha256: shaOf(r, "b"),
+      }),
+    ).toMatchObject({ ok: true });
+
+    expect(
+      await call(tight, {
+        layer: "project",
+        topic: "a",
+        op: "update",
+        pinned: false,
+        mode: "apply",
+        expectedSha256: shaOf(r, "a"),
+      }),
+    ).toMatchObject({ ok: true });
+
+    const over = await call(tight, baseCreate("c", { pinned: true, description: "短" }));
+    expect(over.ok).toBe(false);
+    expect(over.code).toBe("PINNED_LIMIT_EXCEEDED");
   });
 });
