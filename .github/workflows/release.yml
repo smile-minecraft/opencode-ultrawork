@@ -11,6 +11,7 @@ name: release
 permissions:
   contents: read
   id-token: write
+  issues: write   # 測試失敗時把輸出貼到診斷 issue（見下方步驟）
 
 jobs:
   release:
@@ -44,7 +45,23 @@ jobs:
           fi
 
       - name: 測試
-        run: bun test
+        id: test
+        run: bun test 2>&1 | tee "$RUNNER_TEMP/uw-test-output.txt"
+
+      - name: 測試失敗時把輸出貼到診斷 issue
+        if: failure() && steps.test.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "ref: ${{ github.ref_name }} | sha: ${{ github.sha }}"
+            echo ""
+            echo '```'
+            tail -60 "$RUNNER_TEMP/uw-test-output.txt"
+            echo '```'
+          } > "$RUNNER_TEMP/uw-body.txt"
+          gh issue comment 1 --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/uw-body.txt"
 
       - name: 型別檢查
         run: bun run typecheck
