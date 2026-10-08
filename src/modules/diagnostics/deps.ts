@@ -11,25 +11,30 @@
  *   `createWorkflowRuntime` 產物，讀到的位置與寫入端逐字一致。
  */
 
-import { homedir } from "node:os";
-import type { Plugin } from "@opencode/plugin";
-import { resolveGlobalConfigDir } from "../../settings/paths.ts";
+import type { Host } from "../../host.ts";
+import type { AgentRoleFileLookupResult } from "./shared.ts";
+import { resolveAgentsRoot } from "../../settings/paths.ts";
 import type { UltraworkSettings } from "../../settings/defaults.ts";
 import { isModuleEnabled } from "../registry.ts";
 import { createWorkflowRuntime, type FullUltraworkRuntimeContext } from "../workflow/index.ts";
 import { TOOL_MODULES } from "./inventory.ts";
 
 export interface DiagnosticsDeps {
-  readonly ctx: Plugin.Context;
+  readonly host: Host;
   readonly settings: UltraworkSettings;
   readonly runtime: FullUltraworkRuntimeContext;
   /**
-   * 全域設定資料夾，解析規則與外掛入口、skiller 相同（`ctx.options.globalDir` 優先）。
+   * 全域設定資料夾，由宿主在組裝時明確提供。
    *
    * 專案根目錄就是這個資料夾時，兩層共用同一個 `.ultrawork/`，版控衛生檢查要把
    * 全域層的檔案排除（見 `shared.ts` 的 `isSameAsGlobalConfigDir`）。
    */
   readonly globalConfigDir: string;
+  /** OpenCode 提供的唯讀角色檔查詢；其他宿主未提供時，呼叫端必須標 skipped。 */
+  readonly agentRoleFiles?: {
+    readonly agentsRoot: string;
+    readonly lookup: (name: string) => AgentRoleFileLookupResult;
+  };
   /**
    * 平台實際註冊的工具清單。
    *
@@ -48,30 +53,34 @@ export function moduleEnabled(settings: UltraworkSettings, key: string): boolean
 /**
  * 組出診斷依賴。
  *
- * `listRegisteredToolNames` 的實作把平台清單收斂到「宣告屬於本外掛」的工具名：
- * 未收斂的話 `ctx.tool.list()` 會把平台內建工具也算進來，永遠對不上凍結清單。
+ * `listRegisteredToolNames` 的實作把宿主清單收斂到「宣告屬於本外掛」的工具名：
+ * 未收斂的話會把平台內建工具也算進來，永遠對不上凍結清單。
  * 回 null 代表平台不提供清單，呼叫端必須標 skipped。
  */
 export function createDiagnosticsDeps(
-  ctx: Plugin.Context,
+  host: Host,
   settings: UltraworkSettings,
 ): DiagnosticsDeps {
-  const runtime = createWorkflowRuntime(ctx, settings);
-  const options = (ctx.options ?? {}) as Record<string, unknown>;
-  const globalConfigDir =
-    typeof options.globalDir === "string"
-      ? options.globalDir
-      : resolveGlobalConfigDir(process.env as Record<string, string | undefined>, homedir());
-  const toolDomain = ctx.tool as unknown as { list?: () => Promise<readonly { id: string }[]> };
+  const runtime = createWorkflowRuntime(host, settings);
+  const globalConfigDir = host.roots.globalConfigDirectory;
+  const agentsRoot = resolveAgentsRoot(settings.skiller.agentsDir, globalConfigDir);
   return {
-    ctx,
+    host,
     settings,
     runtime,
     globalConfigDir,
+    ...(host.capabilities.agentRoleFiles
+      ? {
+          agentRoleFiles: {
+            agentsRoot,
+            lookup: (name: string) => host.capabilities.agentRoleFiles!.lookup(agentsRoot, name),
+          },
+        }
+      : {}),
     listRegisteredToolNames: async () => {
-      if (typeof toolDomain?.list !== "function") return null;
       try {
-        const entries = await toolDomain.list();
+        const entries = await host.tools.list();
+        if (entries === null) return null;
         // 用 hasOwn 而不是 `in`：`TOOL_MODULES` 是普通物件、繼承 `Object.prototype`，
         // `in` 會把 `constructor`／`toString` 這類平台內建 id 誤判成本外掛工具。
         return entries.map((entry) => entry.id).filter((id) => Object.hasOwn(TOOL_MODULES, id));

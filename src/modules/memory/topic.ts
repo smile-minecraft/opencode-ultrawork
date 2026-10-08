@@ -58,8 +58,8 @@ export function validateSlug(slug: string): void {
 }
 
 function invalid(raw: string): never {
-  // 原文一併回傳，讓 memorizer 能直接修，不必另外讀檔。
-  throw new MemoryError("INVALID_TOPIC_FORMAT", "主題格式錯誤，請派 memorizer 檢查 frontmatter。", { raw });
+  // 原文一併回傳，讓具記憶寫入權的 agent 能直接修，不必另外讀檔。
+  throw new MemoryError("INVALID_TOPIC_FORMAT", "主題格式錯誤，請由設定 key `memory.writerAgents` 授權的 agent 檢查 frontmatter。", { raw });
 }
 
 /** 解析單一 frontmatter 值；不合法時回 undefined。 */

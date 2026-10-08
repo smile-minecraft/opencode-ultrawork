@@ -76,6 +76,13 @@ export function createSkillerRetireTool(deps: SkillerDeps) {
         if (mode !== "preview" && mode !== "apply") {
           return jsonError("INVALID_MODE", "mode 只能是 preview 或 apply", "請將 mode 改為 preview 或 apply。");
         }
+        if (scopeCheck.scope === "managed" && mode === "apply" && deps.agentRoleEditor === null) {
+          return jsonError(
+            "HOST_CAPABILITY_UNAVAILABLE",
+            "無法編輯角色檔：宿主未提供角色檔改寫能力，未移動 skill。",
+            "請改用有角色檔改寫能力的宿主後再試一次。",
+          );
+        }
         const projectSlug = deriveProjectSlug(resolve(deps.resolveProjectRoot(context)));
         const nameCheck = validateSkillName(args.name, scope, projectSlug);
         if (!nameCheck.ok) {

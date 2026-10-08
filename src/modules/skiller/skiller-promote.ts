@@ -125,9 +125,11 @@ export function createSkillerPromoteTool(deps: SkillerDeps) {
         // 回報 skipped（不建立結構）。
         if (targetAgents.length > 0) {
           const agentsRoot = resolveAgentsRoot(deps);
-          const pre = prevalidateTargetAgents(agentsRoot, targetAgents);
+          const pre = prevalidateTargetAgents(agentsRoot, targetAgents, deps);
           if (!pre.ok) {
-            return jsonError("UNKNOWN_AGENT", `未知的 agent：${pre.unknownAgent}（${pre.reason}）`, "請確認 agents/<name>.md 存在後再試一次。");
+            return deps.agentRoleEditor === null
+              ? jsonError("HOST_CAPABILITY_UNAVAILABLE", `無法編輯角色檔：${pre.reason}。`, "請改用有角色檔改寫能力的宿主後再試一次。")
+              : jsonError("UNKNOWN_AGENT", `未知的 agent：${pre.unknownAgent}（${pre.reason}）`, "請確認 agents/<name>.md 存在後再試一次。");
           }
         }
 

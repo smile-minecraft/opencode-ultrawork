@@ -3,7 +3,7 @@
  *
  * - `workflow_bootstrap`、`workflow_l1_check`、`workflow_doctor`、
  *   `workflow_health_check`、`tool_hook_manifest`、`ultrawork_selftest`。
- * - 開關開啟時註冊 6 個工具；關閉時完全不碰 ctx（`registerModules` 不會呼叫本檔）。
+ * - 開關開啟時註冊 6 個工具；關閉時完全不碰宿主（`registerModules` 不會呼叫本檔）。
  * - 工具定義在 transform 外先建好，transform 回呼只做 `editor.add`，
  *   保持同步、可重播、無副作用；回傳的註冊由外掛卸載時 dispose。
  * - 唯讀不變條件：六個工具都不寫入任何檔案；`ultrawork_selftest` 也只呼叫
@@ -15,7 +15,8 @@
  */
 
 import type { DefinedTool } from "../../kit/define-tool.ts";
-import type { ModuleDefinition, ModuleRuntime, Registration } from "../types.ts";
+import type { HostRegistration } from "../../host.ts";
+import type { ModuleDefinition, ModuleRuntime } from "../types.ts";
 import { createDiagnosticsDeps } from "./deps.ts";
 import { createToolHookManifestTool } from "./tool-hook-manifest.ts";
 import { createUltraworkSelftestTool } from "./ultrawork-selftest.ts";
@@ -26,8 +27,8 @@ import { createWorkflowL1CheckTool } from "./workflow-l1-check.ts";
 
 export const diagnosticsModule: ModuleDefinition = {
   key: "diagnostics",
-  register: (runtime: ModuleRuntime): Promise<Registration> => {
-    const deps = createDiagnosticsDeps(runtime.ctx, runtime.settings);
+  register: (runtime: ModuleRuntime): Promise<HostRegistration> => {
+    const deps = createDiagnosticsDeps(runtime.host, runtime.settings);
     // selftest 需要能實際呼叫的工具定義；先建好前五個，再把 selftest 一起放進
     // toolMap，確保 `results[]` 反映的是同一批工具。
     const bootstrap = createWorkflowBootstrapTool(deps);
@@ -45,9 +46,7 @@ export const diagnosticsModule: ModuleDefinition = {
     const selftest = createUltraworkSelftestTool(deps, selftestToolMap);
 
     const tools: DefinedTool[] = [bootstrap, l1Check, doctor, healthCheck, manifest, selftest];
-    return runtime.ctx.tool.transform((editor) => {
-      for (const tool of tools) editor.add(tool as never);
-    });
+    return runtime.host.tools.install(tools);
   },
 };
 

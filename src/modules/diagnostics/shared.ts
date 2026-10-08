@@ -15,8 +15,8 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import type { HostProcess } from "../../kit/process-runner.ts";
 import { GLOBAL_MIGRATION_ITEMS, ultraworkGitignoreHasRequiredLines } from "../../migrate/index.ts";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 import { BOOTSTRAP_FULL_SOFT_BUDGET, STATE_MD_LIMIT } from "../workflow/core/constants.ts";
@@ -27,6 +27,7 @@ import { renderIndex } from "../memory/index-render.ts";
 import { readLog, verifyLog, pendingNotes } from "../memory/log.ts";
 import { mismatchedTopics } from "../memory/disposition.ts";
 import { inspectMemoryMigration } from "../../migrate/memory-store.ts";
+import type { UltraworkSettings } from "../../settings/defaults.ts";
 import {
   inspectContentRef,
   inspectPlanRegistry,
@@ -50,6 +51,9 @@ export interface CheckItem {
   status: "passed" | "failed" | "warn" | "skipped";
   details: string;
 }
+
+export type AgentRoleFileLookupResult = "exists" | "missing" | "unknown";
+export type AgentRoleFileLookup = (name: string) => AgentRoleFileLookupResult;
 
 /** 單一記憶層的預算狀態（企劃書第 12 節）。欄位形狀凍結：上限走設定值，不加欄位。 */
 export interface LayerBudget {
@@ -128,14 +132,14 @@ export interface MemoryBudgetOutcome {
   checks: CheckItem[];
 }
 
-/** 未整理筆記超過這個數量就提醒派 memorizer 整理。 */
+/** 未整理筆記超過這個數量就提醒由 `memory.writerAgents` 設定的角色整理。 */
 const PENDING_NOTES_WARN = 10;
 
 /**
  * 記憶預算與健康診斷（唯讀）。
  *
  * 所有項目都是 warn，不影響診斷 ok：預算超標、紀錄斷裂、待遷移都不會讓外掛停擺，
- * 需要的是派 memorizer 整理。state.md 與 bootstrap 的大小規則與舊版相同。
+ * 整理動作由 `memory.writerAgents` 設定的角色負責。state.md 與 bootstrap 的大小規則與舊版相同。
  *
  * 上限用「該層」的設定（`budgets` 沒給時用內建預設）；回傳欄位形狀不變，
  * 超過上限（索引、超大主題、pinned 過多、主題數超限）都走同一個 warn。
@@ -173,7 +177,7 @@ export function collectMemoryBudget(paths: Paths, globalRoot: string = paths.PRO
             pinned > budget.pinnedLimit ? `pinned ${pinned} 個超過上限 ${budget.pinnedLimit}` : null,
             overCount ? `主題 ${topics.length} 個超過上限 ${budget.maxTopics}（既有主題保留，只擋新增）` : null,
           ].filter((reason): reason is string => reason !== null);
-          warnings.push(`${layer.layer} 層記憶超過預算（${reasons.join("；")}），請派 memorizer 用 memory-maintain report 整理。`);
+          warnings.push(`${layer.layer} 層記憶超過預算（${reasons.join("；")}），請由 memory.writerAgents 中設定的角色用 memory-maintain report 整理。`);
         }
         if (topics.length > 0 && readOptional(memoryPath(layer, "MEMORY.md")) !== index) {
           warnings.push(`${layer.layer} 層的 MEMORY.md 與主題不一致，下一次 memory-write 會重建。`);
@@ -204,7 +208,7 @@ export function collectMemoryBudget(paths: Paths, globalRoot: string = paths.PRO
     name: "Memory Budget",
     status: overBudgetLayers > 0 ? "warn" : "passed",
     details: overBudgetLayers > 0
-      ? "有記憶層超過預算，請派 memorizer 用 memory-maintain report 整理。"
+      ? "有記憶層超過預算，請由 memory.writerAgents 中設定的角色用 memory-maintain report 整理。"
       : "兩層記憶都在預算內。",
   });
   checks.push({
@@ -217,12 +221,12 @@ export function collectMemoryBudget(paths: Paths, globalRoot: string = paths.PRO
     status: integrity ? "passed" : "warn",
     details: integrity
       ? "記憶紀錄的 hash 鏈完整，主題與最後一筆寫入紀錄一致。"
-      : "紀錄鏈斷裂或主題在工具外被修改，請派 memorizer 用 memory-maintain report 檢查，確認後用 reseal-log。",
+      : "紀錄鏈斷裂或主題在工具外被修改，請由 memory.writerAgents 中設定的角色用 memory-maintain report 檢查，確認後用 reseal-log。",
   });
   checks.push({
     name: "Memory Pending Notes",
     status: pendingNoteCount > PENDING_NOTES_WARN ? "warn" : "passed",
-    details: `未整理的筆記 ${pendingNoteCount} 筆${pendingNoteCount > PENDING_NOTES_WARN ? "，請派 memorizer 整理" : ""}。`,
+    details: `未整理的筆記 ${pendingNoteCount} 筆${pendingNoteCount > PENDING_NOTES_WARN ? "，請由 memory.writerAgents 中設定的角色整理" : ""}。`,
   });
   const migration = inspectMemoryMigration(paths.PROJECT_ROOT);
   checks.push({
@@ -252,6 +256,121 @@ export function memoryWriterConfigCheck(writerAgents: readonly string[]): CheckI
   return writerAgents.length > 0
     ? { name: "Memory Writer Config", status: "passed", details: `允許寫記憶的 agent：${writerAgents.join("、")}。` }
     : { name: "Memory Writer Config", status: "warn", details: "memory.writerAgents 是空的，沒有 agent 能寫記憶，高風險任務將無法結案。" };
+}
+
+/** 四個可調整角色清單的診斷；清單問題只警告，不改變診斷工具原有的失敗判定。 */
+export function agentListConfigChecks(settings: UltraworkSettings): CheckItem[] {
+  return [
+    agentListConfigCheck(
+      "Verification Run Agent Config",
+      settings.verification.runAllowedAgents,
+      (names) => `允許呼叫 verification_run 的 agent：${names.join("、")}。`,
+      "verification.runAllowedAgents 是空的，沒有 agent 能呼叫 verification_run。",
+    ),
+    agentListConfigCheck(
+      "Scope Check Agent Config",
+      settings.verification.scopeCheckAllowedAgents,
+      (names) => `允許呼叫 change-scope-check 的 agent：${names.join("、")}。`,
+      "verification.scopeCheckAllowedAgents 是空的，沒有 agent 能呼叫 change-scope-check。",
+    ),
+    memoryWriterConfigCheck(settings.memory.writerAgents),
+    agentListConfigCheck(
+      "Evidence Pack Gate Config",
+      settings.workflow.evidencePack.gatedSubagents,
+      (names) => `受七節格式檢查的 agent：${names.join("、")}。`,
+      "workflow.evidencePack.gatedSubagents 是空的，派遣前的七節格式檢查已停用。",
+    ),
+  ];
+}
+
+function agentListConfigCheck(
+  name: string,
+  names: readonly string[],
+  describeNames: (names: readonly string[]) => string,
+  emptyDetails: string,
+): CheckItem {
+  return names.length > 0
+    ? { name, status: "passed", details: describeNames(names) }
+    : { name, status: "warn", details: emptyDetails };
+}
+
+/** 四份角色設定依原清單順序合併去重，供一次性角色檔檢查使用。 */
+export function configuredAgentNames(settings: UltraworkSettings): string[] {
+  return [...new Set([
+    ...settings.verification.runAllowedAgents,
+    ...settings.verification.scopeCheckAllowedAgents,
+    ...settings.memory.writerAgents,
+    ...settings.workflow.evidencePack.gatedSubagents,
+  ])];
+}
+
+/** 安全角色名稱不得攜帶路徑分隔符或上一層片段。 */
+export function isSafeAgentRoleName(name: string): boolean {
+  return name.length > 0
+    && name !== "."
+    && !name.includes("..")
+    && !/[\\/\0]/.test(name);
+}
+
+/**
+ * 唯讀檢查已設定角色的角色檔；查詢能力由宿主注入，避免把 OpenCode API 綁進純診斷規則。
+ *
+ * 無查詢能力或無法確認的名稱不會被當成通過；不安全名稱不會交給查詢能力組路徑。
+ */
+export function agentRoleFilesCheck(
+  names: readonly string[],
+  lookup?: AgentRoleFileLookup,
+  agentsRoot = "（未提供）",
+): CheckItem {
+  const uniqueNames = [...new Set(names)];
+  if (!lookup) {
+    return {
+      name: "Agent Role Files",
+      status: "skipped",
+      details: `無法檢查角色檔：宿主未提供角色檔查詢能力。檢查目錄：${agentsRoot}`,
+    };
+  }
+  if (uniqueNames.length === 0) {
+    return { name: "Agent Role Files", status: "passed", details: `沒有設定角色名稱可檢查。檢查目錄：${agentsRoot}` };
+  }
+
+  const missing: string[] = [];
+  const unknown: string[] = [];
+  for (const name of uniqueNames) {
+    if (!isSafeAgentRoleName(name)) {
+      unknown.push(name);
+      continue;
+    }
+    let result: AgentRoleFileLookupResult;
+    try {
+      result = lookup(name);
+    } catch {
+      result = "unknown";
+    }
+    if (result === "missing") missing.push(name);
+    else if (result !== "exists") unknown.push(name);
+  }
+
+  if (missing.length > 0) {
+    const uncertainty = unknown.length > 0 ? `無法確認：${unknown.join("、")}。` : "";
+    return {
+      name: "Agent Role Files",
+      status: "warn",
+      details: `找不到角色檔：${missing.map((name) => `${name}.md`).join("、")}。${uncertainty}角色也可能定義在專案層，請確認名稱或補上角色檔。檢查目錄：${agentsRoot}`,
+    };
+  }
+  if (unknown.length > 0) {
+    return {
+      name: "Agent Role Files",
+      status: "skipped",
+      details: `無法確認角色檔：${unknown.join("、")}；名稱不安全或 agentsDir 無法安全讀取。檢查目錄：${agentsRoot}`,
+    };
+  }
+  return {
+    name: "Agent Role Files",
+    status: "passed",
+    details: `已確認角色檔存在：${uniqueNames.map((name) => `${name}.md`).join("、")}。檢查目錄：${agentsRoot}`,
+  };
 }
 
 /** 目前任務：游標優先，退回第一個進行中任務。 */
@@ -682,22 +801,39 @@ export interface UltraworkGitTrackingHealth {
   unavailableReason?: string;
 }
 
-/**
- * 列出被版控追蹤的 `.ultrawork/` 內檔案（唯讀的 `git ls-files`）。
- *
- * 失敗（不是 git repo、沒有 git、被拒）就回 `tracked: null` 加原因，呼叫端標
- * skipped、不假裝檢查過。絕不執行任何會改動版控的指令。
- */
-export function collectUltraworkGitTracking(projectRoot: string): UltraworkGitTrackingHealth {
-  try {
-    const output = execFileSync("git", ["-C", projectRoot, "ls-files", "-z", "--", ".ultrawork"], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const tracked = output.split("\0").filter((entry) => entry !== "").sort();
-    return { tracked };
-  } catch (error) {
-    return { tracked: null, unavailableReason: (error as Error).message };
-  }
-}
+/** 唯讀 `git ls-files` 的上限：超過就當查不到，不卡住診斷。 */
+const GIT_LS_FILES_TIMEOUT_MS = 30_000;
+const GIT_LS_FILES_MAX_BYTES = 1024 * 1024;
 
+/**
+ * 列出被版控追蹤的 `.ultrawork/` 內檔案（唯讀的 `git ls-files`，經宿主程序能力）。
+ *
+ * 能力缺席或失敗（不是 git repo、沒有 git、被拒）就回 `tracked: null` 加原因，
+ * 呼叫端標 skipped、不假裝檢查過。絕不執行任何會改動版控的指令。
+ */
+export function collectUltraworkGitTracking(
+  projectRoot: string,
+  hostProcess?: HostProcess | null,
+): UltraworkGitTrackingHealth {
+  if (!hostProcess) {
+    return { tracked: null, unavailableReason: "宿主未提供程序執行能力，無法執行 git 列出被追蹤的檔案。" };
+  }
+  const result = hostProcess.runSync({
+    command: "git",
+    args: ["-C", projectRoot, "ls-files", "-z", "--", ".ultrawork"],
+    cwd: projectRoot,
+    timeoutMs: GIT_LS_FILES_TIMEOUT_MS,
+    maxOutputBytes: GIT_LS_FILES_MAX_BYTES,
+  });
+  if (result.error !== undefined || result.timedOut || result.truncated || result.exitCode !== 0) {
+    const reason = result.error
+      ?? (result.timedOut
+        ? `git ls-files 逾時（${GIT_LS_FILES_TIMEOUT_MS}ms）。`
+        : result.truncated
+          ? "git ls-files 輸出超過上限，已中斷。"
+          : `git ls-files 退出碼 ${result.exitCode}。`);
+    return { tracked: null, unavailableReason: reason };
+  }
+  const tracked = result.stdout.split("\0").filter((entry) => entry !== "").sort();
+  return { tracked };
+}

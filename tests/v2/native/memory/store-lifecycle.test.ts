@@ -156,19 +156,19 @@ test("同 session 快照固定，新 session 讀新內容，pinned 預算不截�
 test("hook 標記不重複，inject false 不掛 hook，unsafe root 略過", async () => {
   const r = root(),
     fake = createFakeV2Context({ directory: r, options: { globalDir: r } });
-  await memoryModule.register({ ctx: fake.ctx, settings: DEFAULT_SETTINGS });
+  await memoryModule.register({ host: fake.host, settings: DEFAULT_SETTINGS });
   const event = { sessionID: "s", system: [] as { type: string; text: string }[] };
   await fake.sessionHooks.get("context")!(event);
   await fake.sessionHooks.get("context")!(event);
   expect(event.system).toHaveLength(1);
   const off = createFakeV2Context({ directory: r });
   await memoryModule.register({
-    ctx: off.ctx,
+    host: off.host,
     settings: { ...DEFAULT_SETTINGS, memory: { ...DEFAULT_SETTINGS.memory, inject: false } },
   });
   expect(off.sessionHooks.has("context")).toBe(false);
   const unsafe = createFakeV2Context({ directory: "/" });
-  await memoryModule.register({ ctx: unsafe.ctx, settings: DEFAULT_SETTINGS });
+  await memoryModule.register({ host: unsafe.host, settings: DEFAULT_SETTINGS });
   const e = { sessionID: "s", system: [] };
   await unsafe.sessionHooks.get("context")!(e);
   expect(e.system).toHaveLength(0);

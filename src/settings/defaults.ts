@@ -32,19 +32,24 @@ export interface UltraworkSettings {
     catalog: "index" | "full";
   };
   verification: {
-    /** 能呼叫 verification_run 的 agent；預設只有 momus（第二層 runtime 防護）。 */
+    /** 能呼叫 verification_run 的 agent；空清單代表無人授權（第二層 runtime 防護）。 */
     runAllowedAgents: string[];
-    /** 能呼叫 change-scope-check 的 agent；預設 build 與 ultra。 */
+    /** 能呼叫 change-scope-check 的 agent；空清單代表無人授權。 */
     scopeCheckAllowedAgents: string[];
   };
-  memory: { writerAgents: string[]; inject: boolean; budget: MemoryBudgets };
+  memory: {
+    /** 能寫記憶的 agent；空清單代表沒有 writer。 */
+    writerAgents: string[];
+    inject: boolean;
+    budget: MemoryBudgets;
+  };
   workflow: {
     completion: {
       /** memory 模組開啟時預設要求記憶處置；關閉時由完成前檢查自行放行。 */
       requireMemoryDisposition: boolean;
     };
     evidencePack: {
-      /** 派發時強制檢查實作說明七節格式的 subagent；預設 implementer／debugger／ultra-coder。 */
+      /** 派發時強制檢查實作說明七節格式的 subagent；空清單代表停用檢查。 */
       gatedSubagents: string[];
     };
   };
@@ -69,16 +74,16 @@ export const DEFAULT_SETTINGS: UltraworkSettings = {
     catalog: "index",
   },
   verification: {
-    runAllowedAgents: ["momus"],
-    scopeCheckAllowedAgents: ["build", "ultra"],
+    runAllowedAgents: [],
+    scopeCheckAllowedAgents: [],
   },
-  memory: { writerAgents: ["memorizer"], inject: true, budget: defaultMemoryBudgets() },
+  memory: { writerAgents: [], inject: true, budget: defaultMemoryBudgets() },
   workflow: {
     completion: {
       requireMemoryDisposition: true,
     },
     evidencePack: {
-      gatedSubagents: ["implementer", "debugger", "ultra-coder"],
+      gatedSubagents: [],
     },
   },
 };

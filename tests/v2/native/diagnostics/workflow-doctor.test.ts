@@ -33,6 +33,13 @@ function checkByName(r: any, name: string) {
   return r.checks.find((c: any) => c.name === name);
 }
 
+const AGENT_CONFIG_CHECK_NAMES = [
+  "Verification Run Agent Config",
+  "Scope Check Agent Config",
+  "Memory Writer Config",
+  "Evidence Pack Gate Config",
+];
+
 /** 舊版 `14-doctor-memory-budget.test.ts` 的 doctor 區塊。 */
 describe("workflow_doctor 記憶體預算", () => {
   test("健康 workspace 仍回完整 memory_budget 區塊", async () => {
@@ -111,6 +118,67 @@ describe("workflow_doctor 記憶體預算", () => {
     expect(r2.memory_budget.missing_content_ref_plan_count).toBe(0);
     expect(r2.memory_budget.missing_content_ref_status).toBe("ok");
     await fake2.registration?.dispose();
+  });
+});
+
+describe("workflow_doctor agent 設定診斷", () => {
+  test("四個角色清單皆空時各自警告設定 key 與影響", async () => {
+    const root = await tempRoot();
+    writeMinimalWorkspace(root);
+    const fake = await setupDiagnostics(root, structuredClone(DEFAULT_SETTINGS));
+    const result = await callTool(fake, "workflow_doctor");
+    const checks = result.checks.filter((item: any) => AGENT_CONFIG_CHECK_NAMES.includes(item.name));
+
+    expect(checks.map((item: any) => item.status)).toEqual(["warn", "warn", "warn", "warn"]);
+    expect(checks.map((item: any) => item.details)).toEqual([
+      "verification.runAllowedAgents 是空的，沒有 agent 能呼叫 verification_run。",
+      "verification.scopeCheckAllowedAgents 是空的，沒有 agent 能呼叫 change-scope-check。",
+      "memory.writerAgents 是空的，沒有 agent 能寫記憶，高風險任務將無法結案。",
+      "workflow.evidencePack.gatedSubagents 是空的，派遣前的七節格式檢查已停用。",
+    ]);
+    await fake.registration?.dispose();
+  });
+
+  test("四個角色清單有值時逐項通過並列出完整名稱", async () => {
+    const root = await tempRoot();
+    writeMinimalWorkspace(root);
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.verification.runAllowedAgents = ["reviewer", "shared"];
+    settings.verification.scopeCheckAllowedAgents = ["builder"];
+    settings.memory.writerAgents = ["scribe"];
+    settings.workflow.evidencePack.gatedSubagents = ["tester"];
+    const fake = await setupDiagnostics(root, settings);
+    const result = await callTool(fake, "workflow_doctor");
+    const checks = result.checks.filter((item: any) => AGENT_CONFIG_CHECK_NAMES.includes(item.name));
+
+    expect(checks.map((item: any) => item.status)).toEqual(["passed", "passed", "passed", "passed"]);
+    expect(checks.map((item: any) => item.details)).toEqual([
+      "允許呼叫 verification_run 的 agent：reviewer、shared。",
+      "允許呼叫 change-scope-check 的 agent：builder。",
+      "允許寫記憶的 agent：scribe。",
+      "受七節格式檢查的 agent：tester。",
+    ]);
+    await fake.registration?.dispose();
+  });
+
+  test("以 auto agentsDir 檢查角色檔，缺席只警告", async () => {
+    const root = await tempRoot();
+    const globalDir = join(root, "global");
+    const agentsRoot = join(globalDir, "agents");
+    await mkdir(agentsRoot, { recursive: true });
+    await writeFile(join(agentsRoot, "reviewer.md"), "---\ntitle: reviewer\n---\n");
+    writeMinimalWorkspace(root);
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.verification.runAllowedAgents = ["reviewer", "missing"];
+    const fake = await setupDiagnostics(root, settings, { globalDir });
+    const result = await callTool(fake, "workflow_doctor");
+    const check = result.checks.find((item: any) => item.name === "Agent Role Files");
+
+    expect(check.status).toBe("warn");
+    expect(check.details).toContain("missing.md");
+    expect(check.details).toContain("角色也可能定義在專案層");
+    expect(check.details).toContain(agentsRoot);
+    await fake.registration?.dispose();
   });
 });
 

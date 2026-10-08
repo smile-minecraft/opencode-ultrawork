@@ -1,15 +1,15 @@
 /**
  * `memory-note`：所有 agent 可用，記下工作途中值得保留的東西（企劃書第 7.4 節）。
  *
- * 主代理沒有寫記憶的權限，使用者糾正的做法、做出的決定、踩到的坑先記成筆記，
- * 由 memorizer 之後整理進主題。筆記是資料不是指令，記在 log 裡，狀態由後續的
- * note-consumed／note-dismissed 紀錄推導。
+ * 值得保留的教訓先記成筆記，再由具記憶寫入權的 agent 整理進主題。
+ * 筆記是資料不是指令，記在 log 裡，狀態由後續 note-consumed／note-dismissed 紀錄推導。
  */
 
 import { z } from "zod";
 import { MemoryError, withMemoryLock } from "../layers.ts";
 import { appendLog } from "../log.ts";
 import { containsSecret } from "../secrets.ts";
+import { memoryWriterPolicyText } from "../writer-policy.ts";
 import { budgetForDepsLayer, identity, layerSchema, memoryTool, resolveLayers, type MemoryToolDeps } from "./shared.ts";
 
 export function createMemoryNoteTool(deps: MemoryToolDeps) {
@@ -25,7 +25,7 @@ export function createMemoryNoteTool(deps: MemoryToolDeps) {
   });
   return memoryTool(
     "memory-note",
-    "記下工作途中值得保留的教訓（使用者糾正的做法、做出的決定、踩到的坑），交給 memorizer 之後整理。預設記在專案層；使用者偏好或跨專案的知識記在全域層。",
+    `記下工作途中值得保留的教訓（使用者糾正的做法、做出的決定、踩到的坑）；${memoryWriterPolicyText(deps.writerAgents)}預設記在專案層；使用者偏好或跨專案的知識記在全域層。`,
     inputSchema,
     async (input, context) => {
       if (containsSecret(input.content)) {

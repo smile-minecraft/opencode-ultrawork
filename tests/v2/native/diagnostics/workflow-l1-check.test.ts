@@ -149,6 +149,18 @@ describe("workflow_l1_check frontmatter limit 設定錯誤", () => {
     await fake.registration?.dispose();
   });
 
+  test("記憶主題超限時以設定能力描述整理方式，不指定固定角色", async () => {
+    const root = await tempRoot();
+    writeMemoryTopic(root, "---\nlimit: 1000\n---\n# P\n\n" + "a".repeat(4500) + "\n");
+    const fake = await setupDiagnostics(root);
+    const result = await callTool(fake, "workflow_l1_check");
+    const block = result.blocks.find((item: any) => item.name === "project/fixture");
+
+    expect(block.suggestion).toContain("memory.writerAgents");
+    expect(block.suggestion).not.toContain("memorizer");
+    await fake.registration?.dispose();
+  });
+
   test("主題正文中的舊 limit 不再影響主題預算", async () => {
     const root = await tempRoot();
     writeMemoryTopic(root, "limit: abc");

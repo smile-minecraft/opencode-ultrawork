@@ -1,8 +1,8 @@
 /**
- * `memory-write`：memorizer 專用，建立、更新、封存或核對一個主題（企劃書第 7.6 節）。
+ * `memory-write`：具記憶寫入權的 agent 專用，建立、更新、封存或核對一個主題（企劃書第 7.6 節）。
  *
  * - preview（預設）：不寫檔、不取鎖，回傳渲染結果、寫入後的索引大小，以及所有會擋下
- *   apply 的問題（一次列出，不要讓 memorizer 一個一個撞）。
+ *   apply 的問題（一次列出，避免呼叫者反覆嘗試）。
  * - apply：在該層的鎖內重做一次同樣的檢查，通過才寫主題、重建索引、附加 log。
  *
  * log 附加失敗時把主題與索引回復成寫入前的位元組：沒有 log 的寫入會被結案檢查
@@ -18,6 +18,7 @@ import { renderIndex } from "../index-render.ts";
 import { MemoryError, memoryPath, readOptional, withMemoryLock, type MemoryLayer } from "../layers.ts";
 import { appendLog, pendingNotes, readLog } from "../log.ts";
 import { containsSecret } from "../secrets.ts";
+import { memoryWriterPolicyText } from "../writer-policy.ts";
 import {
   TOPIC_TYPES,
   listTopics,
@@ -180,7 +181,7 @@ function removeIfExists(path: string): void {
 export function createMemoryWriteTool(deps: MemoryToolDeps) {
   return memoryTool(
     "memory-write",
-    "（限 memorizer）建立、更新、封存（delete）或核對（verify）一個記憶主題。預設 preview 只回報結果與問題；apply 時 update／delete／verify 要帶 memory-read 取得的 expectedSha256。為任務寫入時帶 taskId，整理掉的筆記用 consumesNotes。",
+    `（${memoryWriterPolicyText(deps.writerAgents)}）建立、更新、封存（delete）或核對（verify）一個記憶主題。預設 preview 只回報結果與問題；apply 時 update／delete／verify 要帶 memory-read 取得的 expectedSha256。為任務寫入時帶 taskId，整理掉的筆記用 consumesNotes。`,
     inputSchema,
     async (input, context) => {
       requireWriter(deps, context);

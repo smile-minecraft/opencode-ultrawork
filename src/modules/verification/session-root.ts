@@ -12,15 +12,15 @@
  * 讀取類工具同樣拒絕；這裡只轉匯出，不再自帶黑名單。
  */
 
-import type { Plugin } from "@opencode/plugin";
+import type { Host } from "../../host.ts";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 
 export { isUnsafeRoot } from "../../kit/path-guard.ts";
 
 /** 本次工具呼叫所屬工作階段的位置；失敗時回傳 undefined，由呼叫端退回外掛實例位置。 */
-async function sessionDirectoryOf(ctx: Plugin.Context, toolCtx: ToolExecutionContext): Promise<string | undefined> {
+async function sessionDirectoryOf(host: Host, toolCtx: ToolExecutionContext): Promise<string | undefined> {
   try {
-    const session = await ctx.session.get({ sessionID: toolCtx.sessionID });
+    const session = await host.sessions.get(toolCtx.sessionID);
     const directory = (session as { location?: { directory?: unknown } } | null | undefined)?.location?.directory;
     if (typeof directory === "string" && directory) return directory;
   } catch {
@@ -30,13 +30,8 @@ async function sessionDirectoryOf(ctx: Plugin.Context, toolCtx: ToolExecutionCon
 }
 
 /** 解析本次執行的工作階段位置，拿不到時退回外掛實例的位置。 */
-export async function resolveSessionDirectory(ctx: Plugin.Context, toolCtx: ToolExecutionContext): Promise<string> {
-  const fromSession = await sessionDirectoryOf(ctx, toolCtx);
+export async function resolveSessionDirectory(host: Host, toolCtx: ToolExecutionContext): Promise<string> {
+  const fromSession = await sessionDirectoryOf(host, toolCtx);
   if (fromSession) return fromSession;
-  const location = ctx.location as { project?: { directory?: unknown }; directory?: unknown } | undefined;
-  const projectDirectory = location?.project?.directory;
-  if (typeof projectDirectory === "string" && projectDirectory) return projectDirectory;
-  const directory = location?.directory;
-  if (typeof directory === "string" && directory) return directory;
-  return "";
+  return host.roots.projectDirectory ?? host.roots.instanceDirectory ?? "";
 }

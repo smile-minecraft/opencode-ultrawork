@@ -1,5 +1,5 @@
 /**
- * `memory-maintain`：memorizer 專用的記憶維護（企劃書第 7.7 節）。
+ * `memory-maintain`：具記憶寫入權的 agent 專用記憶維護（企劃書第 7.7 節）。
  *
  * - report（唯讀）：列出超過預算、可能過時、太久沒用、引用路徑失效、可能重複、
  *   未整理筆記、hash 鏈斷裂、工具外修改、索引不一致，每項附建議動作。
@@ -19,6 +19,7 @@ import { MemoryError, memoryPath, readOptional, withMemoryLock, type MemoryLayer
 import { appendLog, pendingNotes, readLog, verifyLog } from "../log.ts";
 import { listTopics } from "../topic.ts";
 import { readUsage, type Usage } from "../usage.ts";
+import { memoryWriterPolicyText } from "../writer-policy.ts";
 import { allLayersSchema, identity, memoryTool, requireWriter, resolveLayers, type MemoryToolDeps } from "./shared.ts";
 
 const DAY_MS = 86_400_000;
@@ -32,7 +33,7 @@ export interface MaintenanceIssue {
   action: string;
 }
 
-/** 一層的維護報告（唯讀）；doctor 不直接用它，memorizer 透過 report 模式取得。 */
+/** 一層的維護報告（唯讀）；doctor 不直接用它，writer agent 透過 report 模式取得。 */
 export function maintenanceReport(layer: MemoryLayer, budgets?: MemoryBudgets) {
   const budget: MemoryLayerBudget = budgetForLayer(budgets, layer.layer);
   const topics = listTopics(layer);
@@ -116,7 +117,7 @@ const inputSchema = z.object({
 export function createMemoryMaintainTool(deps: MemoryToolDeps) {
   return memoryTool(
     "memory-maintain",
-    "（限 memorizer）report：檢查預算、時效、使用情況、重複、未整理筆記與紀錄完整性；dismiss-notes：附理由略過筆記；reseal-log：確認目前內容無誤後，以現況為新基準修復斷裂的紀錄。",
+    `（${memoryWriterPolicyText(deps.writerAgents)}）report：檢查預算、時效、使用情況、重複、未整理筆記與紀錄完整性；dismiss-notes：附理由略過筆記；reseal-log：確認目前內容無誤後，以現況為新基準修復斷裂的紀錄。`,
     inputSchema,
     async (input, context) => {
       requireWriter(deps, context);

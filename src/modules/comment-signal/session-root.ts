@@ -8,19 +8,16 @@
  * 跟 search／verification 同一套規則，行為一致才好追。
  */
 
-import type { Plugin } from "@opencode/plugin";
+import type { Host } from "../../host.ts";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 
 /** 本次工具呼叫所屬工作階段的位置；失敗時回傳 undefined，由呼叫端退回外掛實例位置。 */
 async function sessionDirectoryOf(
-  ctx: Plugin.Context,
+  host: Host,
   toolCtx: Pick<ToolExecutionContext, "sessionID">,
 ): Promise<string | undefined> {
   try {
-    const get = (ctx.session as unknown as { get: (args: { sessionID: string }) => Promise<unknown> }).get;
-    const session = (await get({ sessionID: toolCtx.sessionID })) as
-      | { location?: { directory?: unknown } }
-      | undefined;
+    const session = await host.sessions.get(toolCtx.sessionID);
     const directory = session?.location?.directory;
     if (typeof directory === "string" && directory.length > 0) return directory;
   } catch {
@@ -31,10 +28,10 @@ async function sessionDirectoryOf(
 
 /** 解析本次執行的工作階段位置，拿不到時退回外掛實例的位置。 */
 export async function resolveSessionDirectory(
-  ctx: Plugin.Context,
+  host: Host,
   toolCtx: Pick<ToolExecutionContext, "sessionID">,
 ): Promise<string> {
-  const candidates = await resolveDirectoryCandidates(ctx, toolCtx);
+  const candidates = await resolveDirectoryCandidates(host, toolCtx);
   return candidates[0] ?? "";
 }
 
@@ -44,16 +41,15 @@ export async function resolveSessionDirectory(
  * 同一事實來源，行為一致。
  */
 export async function resolveDirectoryCandidates(
-  ctx: Plugin.Context,
+  host: Host,
   toolCtx: Pick<ToolExecutionContext, "sessionID">,
 ): Promise<string[]> {
   const out: string[] = [];
   const push = (value: unknown): void => {
     if (typeof value === "string" && value.length > 0 && !out.includes(value)) out.push(value);
   };
-  push(await sessionDirectoryOf(ctx, toolCtx));
-  const location = ctx.location as { project?: { directory?: unknown }; directory?: unknown } | undefined;
-  push(location?.project?.directory);
-  push(location?.directory);
+  push(await sessionDirectoryOf(host, toolCtx));
+  push(host.roots.projectDirectory);
+  push(host.roots.instanceDirectory);
   return out;
 }

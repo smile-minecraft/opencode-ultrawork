@@ -101,6 +101,11 @@ describe("設定 JSON Schema", () => {
       DEFAULT_SETTINGS.workflow.completion.requireMemoryDisposition,
     );
 
+    const memory = defs.memory.properties as Record<string, Schema>;
+    expect(memory.writerAgents!.default).toEqual(DEFAULT_SETTINGS.memory.writerAgents);
+    expect(memory.writerAgents!.default).toEqual([]);
+    expect(String(memory.writerAgents!.description)).toContain("未設定時為空");
+
     const verification = defs.verification.properties as Record<string, Schema>;
     expect(Object.keys(verification).sort()).toEqual(
       Object.keys(DEFAULT_SETTINGS.verification).sort(),
@@ -109,10 +114,14 @@ describe("設定 JSON Schema", () => {
     expect(verification.runAllowedAgents!.default).toEqual(
       DEFAULT_SETTINGS.verification.runAllowedAgents,
     );
+    expect(verification.runAllowedAgents!.default).toEqual([]);
+    expect(String(verification.runAllowedAgents!.description)).toContain("未設定時為空");
     expect(verification.scopeCheckAllowedAgents!.type).toBe("array");
     expect(verification.scopeCheckAllowedAgents!.default).toEqual(
       DEFAULT_SETTINGS.verification.scopeCheckAllowedAgents,
     );
+    expect(verification.scopeCheckAllowedAgents!.default).toEqual([]);
+    expect(String(verification.scopeCheckAllowedAgents!.description)).toContain("未設定時為空");
 
     const workflow = defs.workflow.properties as Record<string, Schema>;
     expect(Object.keys(workflow).sort()).toEqual(Object.keys(DEFAULT_SETTINGS.workflow).sort());
@@ -125,6 +134,8 @@ describe("設定 JSON Schema", () => {
     expect(evidencePack.gatedSubagents!.default).toEqual(
       DEFAULT_SETTINGS.workflow.evidencePack.gatedSubagents,
     );
+    expect(evidencePack.gatedSubagents!.default).toEqual([]);
+    expect(String(evidencePack.gatedSubagents!.description)).toContain("七節檢查停用");
   });
 
   test("memoryLayerBudget 的欄位集合與每個 default 等於 DEFAULT_MEMORY_BUDGET", () => {

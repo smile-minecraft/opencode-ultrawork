@@ -23,6 +23,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { setupUltrawork } from "../../../src/index.ts";
+import { createVerificationRunTool } from "../../../src/modules/verification/verification-run.ts";
 import { verificationModule } from "../../../src/modules/verification/index.ts";
 import { DEFAULT_SETTINGS } from "../../../src/settings/defaults.ts";
 import { createFakeV2Context, fakeV2ToolContext } from "../_fake-v2-context.ts";
@@ -42,9 +43,20 @@ function createWorkspace(prefix = "verification-run-test-"): Workspace {
   };
 }
 
-async function loadTools(locationDirectory: string, sessionDirectory?: string) {
+function verificationRunTestSettings(runAllowedAgents = ["momus"]) {
+  return {
+    ...DEFAULT_SETTINGS,
+    verification: { ...DEFAULT_SETTINGS.verification, runAllowedAgents },
+  };
+}
+
+async function loadTools(
+  locationDirectory: string,
+  sessionDirectory?: string,
+  settings = verificationRunTestSettings(),
+) {
   const fake = createFakeV2Context({ directory: locationDirectory, sessionDirectory });
-  await verificationModule.register({ ctx: fake.ctx, settings: DEFAULT_SETTINGS });
+  await verificationModule.register({ host: fake.host, settings });
   const tool = (name: string) => {
     const definition = fake.added.get(name);
     if (!definition) throw new Error(`tool not registered: ${name}`);
@@ -485,13 +497,12 @@ describe("verification_run（新模組）", () => {
   });
 
   test("即使繞過 frontmatter，非授權 agent 仍由工具拒絕（共用授權清單）", async () => {
-    const { VERIFICATION_RUN_ALLOWED_AGENTS, isVerificationRunAllowedAgent } = await import(
+    const { isVerificationRunAllowedAgent } = await import(
       "../../../src/modules/verification/verification-policy.ts"
     );
-    expect([...VERIFICATION_RUN_ALLOWED_AGENTS]).toEqual(["momus"]);
-    expect(isVerificationRunAllowedAgent("build")).toBe(false);
-    expect(isVerificationRunAllowedAgent(undefined)).toBe(false);
-    expect(isVerificationRunAllowedAgent("momus")).toBe(true);
+    expect(isVerificationRunAllowedAgent("build", [])).toBe(false);
+    expect(isVerificationRunAllowedAgent(undefined, ["momus"])).toBe(false);
+    expect(isVerificationRunAllowedAgent("momus", ["momus"])).toBe(true);
 
     const { tool } = await loadTools(ws.root);
     for (const agent of ["build", "implementer", "arch", undefined] as const) {
@@ -502,6 +513,26 @@ describe("verification_run（新模組）", () => {
       );
       expect(result.ok).toBe(false);
       expect(result.code).toBe("AGENT_NOT_ALLOWED");
+    }
+  });
+
+  test("工具工廠要求明確提供授權清單", () => {
+    type FactoryArgs = Parameters<typeof createVerificationRunTool>;
+    const allowlistIsRequired: FactoryArgs extends [unknown, readonly string[]] ? true : false = true;
+    expect(allowlistIsRequired).toBe(true);
+  });
+
+  test("空的 runAllowedAgents 拒絕所有 caller 並指出設定 key", async () => {
+    const fake = createFakeV2Context({ directory: ws.root });
+    await verificationModule.register({ host: fake.host, settings: DEFAULT_SETTINGS });
+    const tool = fake.added.get("verification_run");
+    if (!tool) throw new Error("tool not registered: verification_run");
+
+    for (const agent of ["qa", "momus", undefined] as const) {
+      const result = await executeTool(tool, { runner: "bun", script: "test:p0" }, agent);
+      expect(result.code).toBe("AGENT_NOT_ALLOWED");
+      expect(result.error).toContain("verification.runAllowedAgents");
+      expect(result.error).not.toContain("僅限  使用");
     }
   });
 
@@ -1548,7 +1579,7 @@ describe("verification_run 授權清單可由設定覆寫", () => {
         verification: { ...DEFAULT_SETTINGS.verification, runAllowedAgents: ["qa"] },
       };
       const fake = createFakeV2Context({ directory: root });
-      await verificationModule.register({ ctx: fake.ctx, settings });
+      await verificationModule.register({ host: fake.host, settings });
       const tool = fake.added.get("verification_run");
       if (!tool) throw new Error("tool not registered: verification_run");
       // qa 在新清單內：過了授權門，走到參數檢查才被擋。

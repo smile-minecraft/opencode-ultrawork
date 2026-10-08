@@ -8,6 +8,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createOpenCodeHost } from "../../src/opencode/adapter.ts";
 
 type Callback = (event: any) => Promise<void> | void;
 
@@ -138,7 +139,17 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}) {
       },
     },
   };
-  return { ctx: ctx as any, toolHooks, sessionHooks, added, registry, events, store };
+  const compatibleContext = ctx as any;
+  return {
+    ctx: compatibleContext,
+    host: createOpenCodeHost(compatibleContext),
+    toolHooks,
+    sessionHooks,
+    added,
+    registry,
+    events,
+    store,
+  };
 }
 
 /** V2 工具執行時拿到的 context。 */

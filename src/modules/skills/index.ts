@@ -1,11 +1,12 @@
 /**
  * skills 模組：skill_search 與 system prompt 技能清單精簡。
  *
- * 開關開啟時註冊一個工具與 session context hook；關閉時完全不碰 ctx。
- * 清單狀態存於 ctx.storage，外掛重新載入後仍能查詢。
+ * 開關開啟時註冊一個工具與 session context hook；關閉時完全不碰宿主。
+ * 清單狀態存於宿主 storage，重新載入後仍能查詢。
  */
 
-import type { ModuleDefinition, ModuleRuntime, Registration } from "../types.ts";
+import type { HostRegistration } from "../../host.ts";
+import type { ModuleDefinition, ModuleRuntime } from "../types.ts";
 import {
   createSkillCatalogStore,
   createSkillSearchTool,
@@ -13,22 +14,15 @@ import {
   type SkillSystemPart,
 } from "./skill-catalog.ts";
 
-function configuredGlobalDir(runtime: ModuleRuntime): string | undefined {
-  const value = (runtime.ctx.options as Record<string, unknown> | undefined)?.globalDir;
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
 export const skillsModule: ModuleDefinition = {
   key: "skills",
-  register: async (runtime: ModuleRuntime): Promise<Registration> => {
-    const store = createSkillCatalogStore(runtime.ctx.storage);
+  register: async (runtime: ModuleRuntime): Promise<HostRegistration> => {
+    const store = createSkillCatalogStore(runtime.host.storage);
     const skillSearch = createSkillSearchTool(store, {
-      policyPath: resolveSkillsPolicyPath(configuredGlobalDir(runtime)),
+      policyPath: resolveSkillsPolicyPath(runtime.host.roots.globalConfigDirectory),
     });
-    const toolRegistration = await runtime.ctx.tool.transform((editor) => {
-      editor.add(skillSearch as never);
-    });
-    const contextRegistration = await runtime.ctx.session.hook("context", async (event) => {
+    const toolRegistration = await runtime.host.tools.install([skillSearch]);
+    const contextRegistration = await runtime.host.sessions.hook("context", async (event) => {
       if (runtime.settings.skills.catalog === "full") return;
       try {
         await store.compact(event.system as unknown as SkillSystemPart[], event.sessionID);

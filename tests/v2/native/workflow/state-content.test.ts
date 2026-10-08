@@ -30,7 +30,9 @@ async function advanceToArchiving(fake: Awaited<ReturnType<typeof setupWorkflow>
 describe("workflow task／plan 狀態機與內容", () => {
   test("高風險任務未審查不能進 ARCHIVING，驗收漏報不能完成", async () => {
     const root = await tempRoot();
-    const fake = await setupWorkflow(root);
+    const settings = structuredClone(DEFAULT_SETTINGS) as UltraworkSettings;
+    settings.memory.writerAgents = ["memorizer"];
+    const fake = await setupWorkflow(root, settings);
     await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "高風險計畫" });
     await callTool(fake, "task-state-sync", {
       event: "create", taskId: "t1", to: "NEW", title: "高風險", owner: "ultra", priority: "high", risk: "high",
@@ -68,6 +70,31 @@ describe("workflow task／plan 狀態機與內容", () => {
     await advanceToArchiving(fake, "t2");
     const receiptMissing = await callTool(fake, "task-state-sync", { event: "complete", taskId: "t2" });
     expect(receiptMissing.code).toBe("MEMORY_DISPOSITION_REQUIRED");
+    await fake.registration?.dispose();
+  });
+
+  test("writerAgents 為空時，高風險任務不能用既有記憶處置完成", async () => {
+    const root = await tempRoot();
+    const fake = await setupWorkflow(root);
+    await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "高風險計畫" });
+    await callTool(fake, "task-state-sync", {
+      event: "create", taskId: "t1", to: "NEW", title: "高風險", owner: "ultra", priority: "high", risk: "high",
+    });
+    await callTool(fake, "plan-task-link", { planId: "p1", taskId: "t1", acceptanceCriteria: ["測試通過"] });
+    await advanceToArchiving(fake, "t1");
+    const layer = memoryLayer(root);
+    await withMemoryLock(layer, () =>
+      appendLog(layer, [
+        { kind: "disposition", taskId: "t1", outcome: "none", reason: "沒有需要保留的新知識", agent: "memorizer", sessionID: "s1" },
+      ]),
+    );
+
+    const result = await callTool(fake, "task-state-sync", {
+      event: "complete",
+      taskId: "t1",
+      acceptance: [{ criterion: "測試通過", met: true, evidence: "目標測試已通過" }],
+    });
+    expect(result.code).toBe("MEMORY_WRITER_REQUIRED");
     await fake.registration?.dispose();
   });
 

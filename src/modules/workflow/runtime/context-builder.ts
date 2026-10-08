@@ -49,8 +49,6 @@ import { getPathsForRoot, isUnsafeRoot, type Paths } from "./context.ts";
 import { createRegistryIO, type RegistryIOOptions, type RegistryRuntimeContext } from "./registry-io.ts";
 import { createStateProjection, type StateProjectionRuntimeContext } from "./state-projection.ts";
 import { verifyTaskDisposition, type DispositionResult } from "../../memory/disposition.ts";
-import { homedir } from "node:os";
-import { resolveGlobalConfigDir } from "../../../settings/paths.ts";
 
 // ─── Layer 1：RuntimeBaseContext ─────────────────────────────
 
@@ -142,6 +140,10 @@ export type StateProjectionDeps = RegistryRuntimeContext;
 export interface CreateRuntimeContextInput {
   input: { directory?: string };
   options: { projectRoot?: string; [key: string]: unknown };
+  /** 記憶寫入權限清單；由 settings 快照提供，不設固定角色預設。 */
+  writerAgents: readonly string[];
+  /** 全域記憶資料夾，與工具註冊時使用同一份解析結果。 */
+  globalMemoryRoot: string;
   registryIO?: RegistryIOOptions;
   createEmptyTasksRegistry: (project?: ProjectBinding) => TasksRegistry;
   /**
@@ -250,7 +252,16 @@ function buildBaseContext(
  * 每層 factory 接受對應上層型別作 DI，**無** `as unknown as` cast。
  */
 export function createRuntimeContext(input: CreateRuntimeContextInput): FullUltraworkRuntimeContext {
-  const { input: pluginInput, options, registryIO, createEmptyTasksRegistry, normalizeTasksRegistry } = input;
+  const {
+    input: pluginInput,
+    options,
+    writerAgents,
+    globalMemoryRoot,
+    registryIO,
+    createEmptyTasksRegistry,
+    normalizeTasksRegistry,
+  } = input;
+  const dispositionWriterAgents = [...writerAgents];
 
   // Layer 1: base
   const base: RuntimeBaseContext = buildBaseContext(
@@ -277,7 +288,12 @@ export function createRuntimeContext(input: CreateRuntimeContextInput): FullUltr
       return { ok: true, status: "not-reported" };
     },
     validateMemoryDispositionForTask: (task, currentProject, context) =>
-      verifyTaskDisposition({ projectRoot: withStateProjection.resolveProjectRoot(context), globalMemoryRoot: resolveGlobalConfigDir(process.env, homedir()), task, writerAgents: ["memorizer"] }),
+      verifyTaskDisposition({
+        projectRoot: withStateProjection.resolveProjectRoot(context),
+        globalMemoryRoot,
+        task,
+        writerAgents: dispositionWriterAgents,
+      }),
   };
 
   return full;

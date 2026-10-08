@@ -28,6 +28,15 @@ import { createFakeV2Context, fakeGlobalDir, fakeV2ToolContext } from "../_fake-
 
 const HOME = homedir();
 
+const verificationTestSettings = {
+  ...DEFAULT_SETTINGS,
+  verification: {
+    ...DEFAULT_SETTINGS.verification,
+    runAllowedAgents: ["momus"],
+    scopeCheckAllowedAgents: ["build"],
+  },
+};
+
 function makeStubFs(): { ops: MigrateFsOps; writes: string[] } {
   const writes: string[] = [];
   const enoent = () => Object.assign(new Error("ENOENT"), { code: "ENOENT" });
@@ -124,7 +133,7 @@ describe("家目錄當根：各模組一致拒絕", () => {
 
   test("verification recheck：家目錄回 INVALID_CWD", async () => {
     const fake = createFakeV2Context({ directory: HOME, sessionDirectory: HOME });
-    await verificationModule.register({ ctx: fake.ctx, settings: DEFAULT_SETTINGS });
+    await verificationModule.register({ host: fake.host, settings: verificationTestSettings });
     const definition = fake.added.get("verification_run");
     const missing = { path: "definitely-missing.txt", state: "missing", comparable: false, reason: "FILE_NOT_FOUND" };
     const raw = await definition.execute(
@@ -172,7 +181,7 @@ describe("symlink 目錄：專案外檔案不被讀、不被算 sha256", () => {
       writeFileSync(join(outside.root, "secret.txt"), "outside-content", "utf8");
       symlinkSync(outside.root, join(ws.root, "link"), "dir");
       const fake = createFakeV2Context({ directory: ws.root });
-      await verificationModule.register({ ctx: fake.ctx, settings: DEFAULT_SETTINGS });
+      await verificationModule.register({ host: fake.host, settings: verificationTestSettings });
       const definition = fake.added.get("change-scope-check");
       const raw = await definition.execute(
         { action: "create", paths: [{ path: "link/secret.txt", kind: "file" }] },

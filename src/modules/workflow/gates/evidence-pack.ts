@@ -7,7 +7,7 @@
  *     取代舊版只看 prompt 內容的鬆散判斷。
  *   - 將 實作說明 規格（AGENTS.md「固定格式 Artifact Templates」之
  *     實作說明 七節固定格式）內化為單一 唯一正式資料。
- *   - 對 implementer / debugger 任務 prompt 強制驗證：七節標題、順序、
+ *   - 對受設定清單管控的 subagent prompt 強制驗證：七節標題、順序、
  *     唯一性、必要內容、Acceptance Criteria 至少一個 checkbox。
  *
  * 設計重點：
@@ -47,9 +47,8 @@ import { asStringList } from "../../../settings/validate.ts";
 
 /**
  * 七節 固定格式 section names（順序敏感）。
- * 變更此陣列必須同步更新 AGENTS.md 之 固定格式 實作說明 規格、
- * `agents/build.md` / `agents/ultra.md` 之 實作說明 描述、
- * 以及對應 unit test 的 section 名稱清單。
+ * 變更此陣列必須同步更新 AGENTS.md 的七節規格、由
+ * `buildSubagentEvidencePackGuidance` 提供的 subagent 指引，以及對應測試。
  */
 export const EVIDENCE_PACK_SECTIONS = [
   "Task Identity",
@@ -66,20 +65,12 @@ export const EVIDENCE_PACK_SECTION_NUMBERS = ["1", "2", "3", "4", "5", "6", "7"]
 
 export type EvidencePackSectionName = (typeof EVIDENCE_PACK_SECTIONS)[number];
 
-/** 受 實作準備階段 強制驗證的 subagent_type（plugin 內 allowlist 子集）。
- *
- * 清單可用設定覆寫（workflow.evidencePack.gatedSubagents），預設等於下方常數；
- * 設定給了非預期的值一律退回預設（由設定驗證層保證，這裡再擋一次是縱深）。
- */
-export const EVIDENCE_PACK_GATED_SUBAGENTS = ["implementer", "debugger", "ultra-coder"] as const;
-export type EvidencePackGatedSubagent = (typeof EVIDENCE_PACK_GATED_SUBAGENTS)[number];
-
-/** 從設定解出實際受驗證的 subagent 清單；沒寫或寫壞都退回內建預設。 */
+/** 從設定解出實際受驗證的 subagent 清單；沒寫或寫壞都保持空清單。 */
 export function resolveEvidencePackGatedSubagents(
   settings: UltraworkSettings | undefined,
 ): readonly string[] {
   return asStringList(settings?.workflow?.evidencePack?.gatedSubagents)
-    ?? [...EVIDENCE_PACK_GATED_SUBAGENTS];
+    ?? [];
 }
 
 // ─── Error Types ─────────────────────────────────────────────
@@ -122,7 +113,7 @@ export interface EvidencePackValidationResult {
  * - `<Name>` 必須等於七節 固定格式 name 之一（case-sensitive，
  *   容忍 leading/trailing 空白）。
  *
- * 採 named capture 方便 debugger 直接讀 `match.groups.section`。
+ * 採 named capture 方便除錯時直接讀 `match.groups.section`。
  */
 const SECTION_HEADING_RE = /^###\s+([1-7])\.\s+(.+?)\s*$/;
 
@@ -442,7 +433,7 @@ export function validateEvidencePack(prompt: unknown): EvidencePackValidationRes
  *   - 不回顯完整 prompt（安全設計不變）。
  *   - 每一筆 error 的 section / message 都列在 issues 清單中，方便診斷。
  *   - 至少列出一個精確正確的 `### N. Name` 範例（從七節 canonical 列表取），
- *     附帶 `agents/build.md` 模板位置，讓 caller 立刻知道正確格式在哪。
+ *     提供精確的七節標題範例，讓 caller 能辨識預期格式。
  *   - 包含每個出現過的 error code、缺漏 section 名稱、計數，便於自動化判讀。
  */
 export function formatEvidencePackErrors(
@@ -477,7 +468,6 @@ export function formatEvidencePackErrors(
     `total_errors=${result.errors.length}`,
     `other_errors=${result.errors.length - missingUnique.length}`,
     `example_heading=${exampleHeading}`,
-    `template=agents/build.md`,
     `issues=[`,
     ...issueLines,
     `]`,

@@ -176,7 +176,7 @@ describe("ultrawork_selftest 逾時保護", () => {
     const { createFakeV2Context, fakeV2ToolContext } = await import("../../_fake-v2-context.ts");
     const { DEFAULT_SETTINGS } = await import("../../../../src/settings/defaults.ts");
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const tool = createUltraworkSelftestTool(createDiagnosticsDeps(fake.ctx, DEFAULT_SETTINGS), {
+    const tool = createUltraworkSelftestTool(createDiagnosticsDeps(fake.host, DEFAULT_SETTINGS), {
       "slow-tool": {
         name: "slow-tool",
         description: "",
@@ -208,7 +208,7 @@ describe("ultrawork_selftest 逾時保護", () => {
     const { createFakeV2Context, fakeV2ToolContext } = await import("../../_fake-v2-context.ts");
     const { DEFAULT_SETTINGS } = await import("../../../../src/settings/defaults.ts");
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const tool = createUltraworkSelftestTool(createDiagnosticsDeps(fake.ctx, DEFAULT_SETTINGS), {});
+    const tool = createUltraworkSelftestTool(createDiagnosticsDeps(fake.host, DEFAULT_SETTINGS), {});
     const result = hoist(
       JSON.parse((await tool.execute({ timeoutMs: 60_000 }, fakeV2ToolContext())).content),
     );

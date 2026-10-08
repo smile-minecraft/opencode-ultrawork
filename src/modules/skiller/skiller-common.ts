@@ -30,6 +30,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
+import type { AgentRoleEditor } from "../../host.ts";
 import { atomicWriteFileWithOps } from "../../kit/atomic-write.ts";
 import { assertContainedPath, isInsideWorktree, isUnsafeRoot } from "../../kit/path-guard.ts";
 import { withContentWriteLock } from "../../kit/write-lock.ts";
@@ -153,6 +154,8 @@ export interface SkillerDeps {
   resolveProjectRoot(context?: ToolExecutionContext): string;
   /** 僅限直接 factory 測試注入；不可由 tool args / options / env 到達 production。 */
   roots?: SkillerRootOverrides;
+  /** 宿主提供的角色檔編輯能力；null 表示宿主明確不支援，執行時必須拒絕。 */
+  agentRoleEditor?: AgentRoleEditor | null;
   /**
    * 寫入單一檔案的操作 seam；僅供 direct factory 測試注入寫入失敗以驗證
    * rollback 行為。production registry 不注入，一律使用真實 fs。
@@ -342,9 +345,9 @@ const PERSONAL_ROUTE_PROBE = "personal-probe-capability";
 type PersonalRouteEffect = "allow" | "ask" | "deny" | "none" | "invalid";
 
 /**
- * 以 @opencode/schema 的 Permission.Rule 語意評估 V2 `permissions` 陣列：
+ * 以權限規則語意評估 V2 `permissions` 陣列：
  * action 為 skill（或涵蓋一切的 `*`）且 resource 命中 personal 通配時，
- * 以最後一條命中的 effect 為準（與 V1 的 last-match 一致）。
+ * 以最後一條命中的 effect 為準（與舊版 last-match 一致）。
  */
 function v2PersonalRouteEffect(data: Record<string, unknown>): PersonalRouteEffect {
   const permissions = data["permissions"];
@@ -1310,7 +1313,7 @@ const V2_PERMISSIONS_KEY_PATTERN = /^permissions:(.*)$/;
 // 值本身是否為可解讀的單行純量另由 isSupportedV2Scalar 把關。
 const V2_ITEM_START_PATTERN = /^( *)- ([A-Za-z_][A-Za-z0-9_]*):[ \t]+(\S(?:.*\S)?)[ \t]*$/;
 const V2_ITEM_FIELD_PATTERN = /^( +)([A-Za-z_][A-Za-z0-9_]*):[ \t]+(\S(?:.*\S)?)[ \t]*$/;
-/** Permission.Rule 的欄位（@opencode/schema Permission.Rule）；多一個少一個都算異常。 */
+/** 權限規則的欄位（action／resource／effect）；多一個少一個都算異常。 */
 const V2_RULE_FIELDS: ReadonlySet<string> = new Set(["action", "resource", "effect"]);
 /** 縮排含 tab 一律 fail closed：YAML 不允許 tab 當結構縮排，猜不出意圖。 */
 const TAB_INDENT_PATTERN = /^[ ]*\t/;
@@ -1758,7 +1761,18 @@ function unsafeAgentsRootResults(agentsRoot: string, agents: string[] | null): A
     detail: UNSAFE_AGENTS_ROOT_REASON,
   }));
 }
-export function prevalidateTargetAgents(agentsRoot: string, agents: string[]): { ok: true } | { ok: false; unknownAgent: string; reason: string } {
+export function prevalidateTargetAgents(
+  agentsRoot: string,
+  agents: string[],
+  deps?: SkillerDeps,
+): { ok: true } | { ok: false; unknownAgent: string; reason: string } {
+  if (deps?.agentRoleEditor === null) {
+    return {
+      ok: false,
+      unknownAgent: agents[0] ?? "(scan)",
+      reason: "宿主未提供角色檔改寫能力",
+    };
+  }
   if (isUnsafeSkillerRoot(agentsRoot)) {
     return { ok: false, unknownAgent: agents[0] ?? "(scan)", reason: UNSAFE_AGENTS_ROOT_REASON };
   }
@@ -1784,6 +1798,10 @@ export function prevalidateTargetAgents(agentsRoot: string, agents: string[]): {
 }
 
 function writeAgentFileAtomic(file: string, content: string, deps?: SkillerDeps): void {
+  if (deps?.agentRoleEditor) {
+    deps.agentRoleEditor.writeFileAtomic(file, content);
+    return;
+  }
   const injected = deps?.writeFile;
   atomicWriteFileWithOps(file, content, {
     writeFileSync: ((path: unknown, data: unknown, options: unknown) => {
@@ -1811,7 +1829,7 @@ function editOneAgentFile(
   const file = resolve(join(agentsRoot, `${agent}.md`));
   let raw: string;
   try {
-    raw = readFileSync(file, "utf-8");
+    raw = deps?.agentRoleEditor?.readFile(file) ?? readFileSync(file, "utf-8");
   } catch (error) {
     return { agent, file, status: "failed", detail: `讀取失敗：${(error as Error).message}` };
   }
@@ -1848,11 +1866,19 @@ export function applyAgentSkillRouting(
   deps?: SkillerDeps,
 ): AgentRoutingFileResult[] {
   if (isUnsafeSkillerRoot(agentsRoot)) return unsafeAgentsRootResults(agentsRoot, agents);
+  if (deps?.agentRoleEditor === null) {
+    return (agents ?? ["(scan)"]).map((agent) => ({
+      agent,
+      file: resolve(join(agentsRoot, `${agent}.md`)),
+      status: "failed",
+      detail: "宿主未提供角色檔改寫能力，未修改任何檔案",
+    }));
+  }
   let targets = agents;
   if (targets === null) {
     let entries: string[];
     try {
-      entries = readdirSync(agentsRoot);
+      entries = deps?.agentRoleEditor?.listFiles(agentsRoot) ?? readdirSync(agentsRoot);
     } catch (error) {
       return [{ agent: "(scan)", file: agentsRoot, status: "failed", detail: `無法列舉 agents 目錄：${(error as Error).message}` }];
     }
@@ -1899,7 +1925,7 @@ export function previewAgentSkillRouting(
     const file = resolve(join(agentsRoot, `${agent}.md`));
     let raw: string;
     try {
-      raw = readFileSync(file, "utf-8");
+    raw = readFileSync(file, "utf-8");
     } catch (error) {
       return { agent, file, planned: "failed" as const, detail: `讀取失敗：${(error as Error).message}` };
     }

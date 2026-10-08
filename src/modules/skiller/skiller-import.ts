@@ -40,9 +40,9 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { defineTool, type ToolExecutionContext } from "../../kit/define-tool.ts";
+import type { HostProcess } from "../../kit/process-runner.ts";
 import { ContentLockBusyError } from "../../kit/write-lock.ts";
 import { jsonError, jsonResult } from "../../kit/json.ts";
 import { atomicWriteFile } from "../../kit/atomic-write.ts";
@@ -72,9 +72,11 @@ export interface SkillCliResult {
 /** CLI runner：參數陣列（含可執行檔）+ cwd；測試注入 fake，不打網路。 */
 export type SkillCliRunner = (command: string[], cwd: string) => Promise<SkillCliResult>;
 
-/** 直接 factory 測試可注入 `runSkillCli`；production registry 不注入。 */
+/** 直接 factory 測試可注入 `runSkillCli`；production 由宿主程序能力提供。 */
 export interface SkillerImportDeps extends SkillerDeps {
   runSkillCli?: SkillCliRunner;
+  /** 宿主程序能力（production 由 skiller 模組填入；測試可注入假能力）。 */
+  process?: HostProcess | null;
 }
 
 const CLI_TIMEOUT_MS = 180_000;
@@ -101,30 +103,36 @@ async function callCli(runner: SkillCliRunner, command: string[], cwd: string): 
     throw new CliSpawnError("CLI_SPAWN_FAILED", `執行 skills CLI 失敗：${(error as Error).message}`);
   }
 }
-async function defaultSkillCliRunner(command: string[], cwd: string): Promise<SkillCliResult> {
-  let result: ReturnType<typeof spawnSync>;
+async function defaultSkillCliRunner(
+  hostProcess: HostProcess,
+  command: string[],
+  cwd: string,
+): Promise<SkillCliResult> {
+  let result: Awaited<ReturnType<typeof hostProcess.run>>;
   try {
-    result = spawnSync(command[0]!, command.slice(1), {
+    result = await hostProcess.run({
+      command: command[0]!,
+      args: command.slice(1),
       cwd,
-      shell: false,
-      timeout: CLI_TIMEOUT_MS,
-      encoding: "utf-8",
-      maxBuffer: CLI_MAX_BUFFER,
+      timeoutMs: CLI_TIMEOUT_MS,
+      maxOutputBytes: CLI_MAX_BUFFER,
     });
   } catch (error) {
     throw new CliSpawnError("CLI_SPAWN_FAILED", `啟動 skills CLI 失敗：${(error as Error).message}`);
   }
-  const spawnError = result.error as (NodeJS.ErrnoException | undefined);
-  if (spawnError) {
-    if (spawnError.code === "ETIMEDOUT") {
-      throw new CliSpawnError("CLI_TIMEOUT", `skills CLI 執行逾時（${CLI_TIMEOUT_MS}ms）`);
-    }
-    throw new CliSpawnError("CLI_SPAWN_FAILED", `啟動 skills CLI 失敗：${spawnError.message}`);
+  if (result.cancelled) {
+    throw new CliSpawnError("CLI_SPAWN_FAILED", "skills CLI 在完成前被取消。");
+  }
+  if (result.timedOut) {
+    throw new CliSpawnError("CLI_TIMEOUT", `skills CLI 執行逾時（${CLI_TIMEOUT_MS}ms）`);
+  }
+  if (result.truncated) {
+    throw new CliSpawnError("CLI_SPAWN_FAILED", "skills CLI 輸出超過上限，已中斷。");
   }
   return {
-    exitCode: result.status ?? 1,
-    stdout: typeof result.stdout === "string" ? result.stdout : "",
-    stderr: typeof result.stderr === "string" ? result.stderr : "",
+    exitCode: result.exitCode ?? 1,
+    stdout: result.stdout,
+    stderr: result.stderr,
   };
 }
 
@@ -241,7 +249,10 @@ interface ImportArgs {
 }
 
 export function createSkillerImportTool(deps: SkillerImportDeps) {
-  const runCli: SkillCliRunner = deps.runSkillCli ?? defaultSkillCliRunner;
+  // runner 優先順序：測試注入 > 宿主程序能力；兩者都沒有就明確拒絕，
+  // 不直接啟動程序。
+  const runCli: SkillCliRunner | null = deps.runSkillCli
+    ?? (deps.process ? defaultSkillCliRunner.bind(null, deps.process) : null);
   return defineTool({
     name: "skiller-import",
     description:
@@ -274,6 +285,14 @@ export function createSkillerImportTool(deps: SkillerImportDeps) {
         const mode = args.mode ?? "preview";
         if (mode !== "preview" && mode !== "apply") {
           return jsonError("INVALID_MODE", "mode 只能是 preview 或 apply", "請將 mode 改為 preview 或 apply。");
+        }
+
+        if (!runCli) {
+          return jsonError(
+            "HOST_CAPABILITY_UNAVAILABLE",
+            "宿主未提供程序執行能力，無法執行 skills CLI。",
+            "請改用有程序執行能力的宿主後再試一次。",
+          );
         }
 
         // 暫存 workdir 由工具自建；preview 與 apply 共用同一生命週期，

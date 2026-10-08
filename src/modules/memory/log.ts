@@ -146,7 +146,7 @@ export function appendLog(layer: MemoryLayer, inputs: LogInput[]): LogEntry[] {
   let previous = entries.at(-1);
   if (entries.length > 0 && (!previous || previous.hash !== entryHash(previous))) {
     if (!isReseal) {
-      throw new MemoryError("MEMORY_LOG_TAMPERED", "記憶紀錄尾端損壞，請派 memorizer 確認內容後用 memory-maintain 的 reseal-log 復原。");
+      throw new MemoryError("MEMORY_LOG_TAMPERED", "記憶紀錄尾端損壞，請由設定 key `memory.writerAgents` 授權的 agent 確認內容後用 memory-maintain 的 reseal-log 復原。");
     }
     previous = entries.filter((entry): entry is LogEntry => entry !== null).at(-1);
   }

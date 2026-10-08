@@ -33,7 +33,7 @@ import {
 const TAG_OPEN = "[";
 
 async function gate(fx: CommentSignalFixture, sessionID: string) {
-  const runtime = createWorkflowRuntime(fx.fake.ctx, DEFAULT_SETTINGS);
+  const runtime = createWorkflowRuntime(fx.fake.host, DEFAULT_SETTINGS);
   return runtime.validateCommentSignalForCompletion(sessionID);
 }
 

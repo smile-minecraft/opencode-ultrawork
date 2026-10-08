@@ -1,8 +1,8 @@
 /**
- * `memory-extract`：memorizer 專用、唯讀，收集萃取一個任務所需的材料（企劃書第 7.5 節）。
+ * `memory-extract`：具記憶寫入權限的 agent 專用唯讀工具，收集萃取一個任務所需的材料（企劃書第 7.5 節）。
  *
  * 材料由外掛自己讀：任務正式紀錄、任務內容、關聯計畫、待整理筆記、候選既有主題、
- * 兩層預算，以及這個任務已有的寫入與處置。不靠主代理轉述，memorizer 看到的就是
+ * 兩層預算，以及這個任務已有的寫入與處置。不靠主代理轉述，呼叫者看到的就是
  * 註冊檔裡的原始內容。
  */
 
@@ -13,6 +13,7 @@ import { MemoryError } from "../layers.ts";
 import { pendingNotes, readLog } from "../log.ts";
 import { searchMemory } from "../search.ts";
 import { listTopics } from "../topic.ts";
+import { memoryWriterPolicyText } from "../writer-policy.ts";
 import { budgetForDepsLayer, memoryTool, requireWriter, resolveLayers, type MemoryToolDeps } from "./shared.ts";
 
 const PENDING_NOTE_LIMIT = 20;
@@ -24,7 +25,7 @@ const inputSchema = z.object({ taskId: z.string() });
 export function createMemoryExtractTool(deps: MemoryToolDeps) {
   return memoryTool(
     "memory-extract",
-    "（限 memorizer）收集一個任務的正式紀錄、內容、關聯計畫、待整理筆記、候選既有主題與兩層預算，供萃取記憶使用。唯讀。",
+    `（${memoryWriterPolicyText(deps.writerAgents)}）收集一個任務的正式紀錄、內容、關聯計畫、待整理筆記、候選既有主題與兩層預算，供萃取記憶使用。唯讀。`,
     inputSchema,
     async (input, context) => {
       requireWriter(deps, context);

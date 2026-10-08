@@ -191,11 +191,8 @@ function sanitizeWorkflow(raw: unknown, warnings: string[]): UltraworkSettings["
       if (gatedSubagents !== undefined) {
         const list = asStringList(gatedSubagents);
         if (list === undefined) {
-          warnInvalidType(
-            warnings,
-            "workflow.evidencePack.gatedSubagents",
-            gatedSubagents,
-            DEFAULT_SETTINGS.workflow.evidencePack.gatedSubagents,
+          warnings.push(
+            `設定「workflow.evidencePack.gatedSubagents」的值型別是 ${describeReceived(gatedSubagents)}，不符合預期，七節檢查已停用（改用空清單 []）。`,
           );
         } else {
           workflow.evidencePack.gatedSubagents = list;

@@ -31,7 +31,7 @@ describe("diagnostics V2 模組註冊", () => {
   test("註冊 6 個工具，每個都有描述與 execute", async () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const registration = await diagnosticsModule.register({ ctx: fake.ctx, settings: DEFAULT_SETTINGS });
+    const registration = await diagnosticsModule.register({ host: fake.host, settings: DEFAULT_SETTINGS });
     expect(registration).toBeDefined();
 
     expect([...fake.added.keys()].sort()).toEqual([...TOOL_NAMES].sort());
@@ -50,7 +50,7 @@ describe("diagnostics V2 模組註冊", () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.modules.diagnostics = false;
     const fake = createFakeV2Context({ tools: [{ id: "subagent", description: "派遣子代理" }] });
-    const registrations = await registerModules({ ctx: fake.ctx, settings }, [diagnosticsModule]);
+    const registrations = await registerModules({ host: fake.host, settings }, [diagnosticsModule]);
     expect(registrations).toEqual([]);
     expect(fake.added.size).toBe(0);
     expect(fake.toolHooks.size).toBe(0);
@@ -60,7 +60,7 @@ describe("diagnostics V2 模組註冊", () => {
   test("dispose 呼叫不拋錯；模組不持有可殘留的 hook 訂閱", async () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const registration = await diagnosticsModule.register({ ctx: fake.ctx, settings: DEFAULT_SETTINGS });
+    const registration = await diagnosticsModule.register({ host: fake.host, settings: DEFAULT_SETTINGS });
     expect(fake.added.size).toBe(6);
     // 可觀察的殘留檢查：diagnostics 只透過 `ctx.tool.transform` 註冊工具，
     // 沒有 event／tool.hook／session.hook 訂閱，也沒有計時器或快取，

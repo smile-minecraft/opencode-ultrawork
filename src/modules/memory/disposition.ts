@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { memoryLayer, memoryPath, type LayerName, type MemoryLayer } from "./layers.ts";
 import { readLog, validReseal, verifyLog, type LogEntry } from "./log.ts";
 import { sha256, validateSlug } from "./topic.ts";
+import { memoryWriterPolicyText } from "./writer-policy.ts";
 
 /** 任務的最後一筆結案處置（最後一筆為準，允許先宣告 none、之後補記改成 recorded）。 */
 export function findTaskDisposition(projectRoot: string, taskId: string): LogEntry | undefined {
@@ -92,7 +93,7 @@ export function verifyTaskDisposition(input: VerifyTaskDispositionInput): Dispos
       const seqs = refs.filter((ref) => (shared ? true : ref.layer === name)).map((ref) => ref.seq);
       if (name === "project") seqs.push(disposition.seq);
       if (seqs.length > 0 && !verifyLog(logs[name], Math.min(...seqs))) {
-        return fail("MEMORY_LOG_TAMPERED", "記憶紀錄的 hash 鏈斷裂，請派 memorizer 用 memory-maintain report 檢查，確認內容後用 reseal-log 復原。");
+        return fail("MEMORY_LOG_TAMPERED", "記憶紀錄的 hash 鏈斷裂，請由設定 key `memory.writerAgents` 授權的 agent 使用 memory-maintain report 檢查，確認內容後用 reseal-log 復原。");
       }
     }
 
@@ -109,7 +110,10 @@ export function verifyTaskDisposition(input: VerifyTaskDispositionInput): Dispos
 
     // 5. 高風險任務只接受 writer agent 的處置
     if (input.task.risk === "high" && (!disposition.agent || !input.writerAgents.includes(disposition.agent))) {
-      return fail("MEMORY_WRITER_REQUIRED", "高風險任務的記憶處置必須由 memorizer 宣告，請派 memorizer 處理。");
+      return fail(
+        "MEMORY_WRITER_REQUIRED",
+        `高風險任務的記憶處置必須由具記憶寫入權的 agent 宣告。${memoryWriterPolicyText(input.writerAgents)}`,
+      );
     }
 
     // 6. none 必須有理由
@@ -139,7 +143,7 @@ export function verifyTaskDisposition(input: VerifyTaskDispositionInput): Dispos
     if (mismatches.length > 0) {
       return fail(
         "MEMORY_OUT_OF_BAND_EDIT",
-        `主題在工具外被修改過：${mismatches.join("、")}。請派 memorizer 用 memory-maintain report 檢查，確認內容無誤後用 reseal-log。`,
+        `主題在工具外被修改過：${mismatches.join("、")}。請由設定 key \`memory.writerAgents\` 授權的 agent 使用 memory-maintain report 檢查，確認內容無誤後用 reseal-log。`,
       );
     }
     return { ok: true, disposition };

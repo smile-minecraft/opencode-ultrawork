@@ -8,9 +8,9 @@
  * Git 只作補充，檔案內容摘要才是比較依據。
  */
 
-import type { Plugin } from "@opencode/plugin";
+import type { Host } from "../../host.ts";
 import { createHash, randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
+import type { HostProcess } from "../../kit/process-runner.ts";
 import {
   lstatSync,
   mkdirSync,
@@ -28,7 +28,7 @@ import { z } from "zod";
 import { defineTool, type DefinedTool, type ToolExecutionContext } from "../../kit/define-tool.ts";
 import { jsonResult } from "../../kit/json.ts";
 import { assertContainedPath, isInsideWorktree, isSensitivePath, resolveInsideWorktree } from "../../kit/path-guard.ts";
-import { isChangeScopeCheckAllowedAgent, CHANGE_SCOPE_CHECK_ALLOWED_AGENTS } from "./scope-check-policy.ts";
+import { isChangeScopeCheckAllowedAgent } from "./scope-check-policy.ts";
 import { isUnsafeRoot, resolveSessionDirectory } from "./session-root.ts";
 
 export const CHANGE_SCOPE_BASELINE_SCHEMA = "change-scope-baseline-v1" as const;
@@ -116,6 +116,12 @@ export interface ScopeGitSummary {
   head: string | null;
   trackedFileCount: number;
   untrackedFileCount: number;
+  /**
+   * git 不可用的原因（目前只用於宿主未提供程序能力）。
+   * 放在摘要而非 issues：預設路徑（未要求完整掃描）的指定路徑核對仍完整，
+   * 不得以此誤標覆蓋不完整或撤銷可重用判斷。
+   */
+  unavailableReason?: string;
 }
 
 export interface ChangeScopeBaseline {
@@ -135,6 +141,8 @@ interface GitSnapshot {
   trackedPaths: Set<string>;
   untrackedPaths: Set<string>;
   statusByPath: Map<string, string>;
+  /** git 不可用的原因（例如宿主未提供程序能力）；可用時為 null。 */
+  unavailableReason: string | null;
 }
 
 interface ScanResult {
@@ -232,80 +240,49 @@ export type GitCommandResult =
   | { ok: false; unavailable: boolean; truncated: boolean };
 
 /**
- * 非同步的 git 呼叫（取代同步的 spawnSync：大輸出或卡住的 git 不再凍結事件迴圈）。
+ * 非同步的 git 呼叫（大輸出或卡住的 git 不再凍結事件迴圈）。
  *
+ * 經宿主程序能力執行（缺席由呼叫端降級，本函式要求呼叫端傳入）：
  * - env 顯式傳目前的 process.env：Bun 的子程序預設拿啟動時的環境快照，
  *   執行期對 PATH 的調整（例如測試放假 git）不傳就看不到。
  * - 輸出上限 MAX_GIT_OUTPUT_BYTES；超過上限就算 exit code 0 也回失敗並標
- *   truncated:true，不讓截斷的清單被當成完整快照（舊版 spawnSync 超過
- *   maxBuffer 會直接報錯，同樣不等於成功）。
- * - 逾時直接 SIGKILL。
+ *   truncated:true，不讓截斷的清單被當成完整快照。
+ * - 逾時由機制終止程序並回失敗，不卡住呼叫端。
  */
 export function runGitCommand(
   root: string,
   args: string[],
-  timeoutMs = GIT_COMMAND_TIMEOUT_MS,
+  timeoutMs: number,
+  hostProcess: HostProcess,
 ): Promise<GitCommandResult> {
-  return new Promise((resolve) => {
-    let stdout = "";
-    let totalBytes = 0;
-    let overLimit = false;
-    let settled = false;
-    let child: ReturnType<typeof spawn> | undefined;
-    const done = (value: GitCommandResult) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const timer = setTimeout(() => {
-      try {
-        child?.stdout?.destroy();
-      } catch {
-        // 忽略清理錯誤。
-      }
-      try {
-        if (child?.pid !== undefined) child.kill("SIGKILL");
-      } catch {
-        // 程序已結束。
-      }
-      done({ ok: false, unavailable: false, truncated: overLimit });
-    }, Math.max(1, timeoutMs));
-    if (typeof timer.unref === "function") timer.unref();
+  return (async () => {
+    let result: Awaited<ReturnType<typeof hostProcess.run>>;
     try {
-      child = spawn("git", ["-C", root, ...args], {
+      result = await hostProcess.run({
+        command: "git",
+        args: ["-C", root, ...args],
+        cwd: root,
         env: { ...process.env },
-        stdio: ["ignore", "pipe", "ignore"],
-        windowsHide: true,
+        timeoutMs: Math.max(1, timeoutMs),
+        stderrMode: "ignore",
+        maxOutputBytes: MAX_GIT_OUTPUT_BYTES,
       });
-    } catch {
-      done({ ok: false, unavailable: false, truncated: false });
-      return;
+    } catch (error) {
+      const errnoCode = (error as { errnoCode?: unknown } | null)?.errnoCode;
+      return { ok: false as const, unavailable: errnoCode === "ENOENT", truncated: false };
     }
-    child.stdout?.on("data", (chunk: Buffer) => {
-      totalBytes += chunk.length;
-      // 超限後繼續讀掉（否則子程序寫滿 pipe 會卡住），但不再累積內容。
-      if (totalBytes > MAX_GIT_OUTPUT_BYTES) {
-        overLimit = true;
-        return;
-      }
-      stdout += chunk.toString("utf8");
-    });
-    child.once("error", (error) => {
-      done({ ok: false, unavailable: (error as NodeJS.ErrnoException).code === "ENOENT", truncated: overLimit });
-    });
-    child.once("close", (code) => {
-      if (code === 0 && !overLimit) done({ ok: true, stdout, truncated: false });
-      else done({ ok: false, unavailable: false, truncated: overLimit });
-    });
-  });
+    if (result.exitCode === 0 && !result.truncated) {
+      return { ok: true as const, stdout: result.stdout, truncated: false };
+    }
+    return { ok: false as const, unavailable: false, truncated: result.truncated };
+  })();
 }
 
 function parseNulSeparated(raw: string): string[] {
   return raw.split("\0").filter(Boolean).map(normalizeRelativePath);
 }
 
-async function collectGitSnapshot(root: string): Promise<GitSnapshot> {
+async function collectGitSnapshot(root: string, hostProcess?: HostProcess | null): Promise<GitSnapshot> {
   const unavailable: ScopeGitSummary = {
     available: false,
     statusAvailable: false,
@@ -318,11 +295,23 @@ async function collectGitSnapshot(root: string): Promise<GitSnapshot> {
     trackedPaths: new Set<string>(),
     untrackedPaths: new Set<string>(),
     statusByPath: new Map<string, string>(),
+    unavailableReason: null as string | null,
   };
-  const headResult = await runGitCommand(root, ["rev-parse", "--verify", "HEAD"]);
-  const trackedResult = await runGitCommand(root, ["ls-files", "-z"]);
-  const statusResult = await runGitCommand(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  const untrackedResult = await runGitCommand(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  // 程序能力缺席：git 步驟視為不可用而降級。原因同時放進 git 摘要，
+  // 預設路徑（未要求完整掃描）也看得到；issues 只在要求掃描時才列，
+  // 指定路徑的核對完整性不受影響。
+  if (!hostProcess) {
+    const reason = "宿主未提供程序執行能力，無法執行 git；已降級為僅核對呼叫端指定的路徑。";
+    return {
+      ...empty,
+      summary: { ...unavailable, unavailableReason: reason },
+      unavailableReason: reason,
+    };
+  }
+  const headResult = await runGitCommand(root, ["rev-parse", "--verify", "HEAD"], GIT_COMMAND_TIMEOUT_MS, hostProcess);
+  const trackedResult = await runGitCommand(root, ["ls-files", "-z"], GIT_COMMAND_TIMEOUT_MS, hostProcess);
+  const statusResult = await runGitCommand(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], GIT_COMMAND_TIMEOUT_MS, hostProcess);
+  const untrackedResult = await runGitCommand(root, ["ls-files", "--others", "--exclude-standard", "-z"], GIT_COMMAND_TIMEOUT_MS, hostProcess);
   // tracked／status／untracked 都是必要清單：任一失敗（含超限）就整份不可用。
   // 缺的清單不能當成空集合＋available，否則 includeGitFiles 掃描會安靜漏檔案。
   // head 只是附加資訊（HEAD_CHANGED 判斷用），缺了不影響快照有效性。
@@ -359,6 +348,7 @@ async function collectGitSnapshot(root: string): Promise<GitSnapshot> {
     trackedPaths,
     untrackedPaths,
     statusByPath,
+    unavailableReason: null,
   };
 }
 
@@ -594,6 +584,11 @@ function scanProject(
     coverage.complete = false;
     addIssue(coverage, { code: "GIT_SCAN_UNAVAILABLE", detail: "已要求完整 Git 掃描，但目前無法取得 Git 檔案清單。" });
   }
+  // 能力缺席造成的 git 不可用：要求完整掃描時才列入問題（與既有
+  // GIT_SCAN_UNAVAILABLE 同一閘門），原因明列，不靜默吞掉。
+  if (includeGitFiles && git.unavailableReason) {
+    addIssue(coverage, { code: "GIT_PROCESS_UNAVAILABLE", detail: git.unavailableReason });
+  }
   const candidates = new Set<string>();
   addRequestedPaths(root, requestedPaths, candidates, coverage);
   for (const path of extraCandidates) addCandidate(candidates, root, path, coverage);
@@ -632,7 +627,7 @@ function scanProject(
 }
 
 /** 以本次呼叫的工作階段位置為專案根目錄；unsafe 或無法解析時 fail closed。 */
-async function resolveRoot(ctx: Plugin.Context, toolCtx: ToolExecutionContext): Promise<ResolvedRoot | FailedRoot> {
+async function resolveRoot(ctx: Host, toolCtx: ToolExecutionContext): Promise<ResolvedRoot | FailedRoot> {
   const lexical = await resolveSessionDirectory(ctx, toolCtx);
   if (isUnsafeRoot(lexical)) {
     return { ok: false, code: "INVALID_PROJECT_ROOT", error: "unsafe project root，拒絕建立或比較檔案摘要。" };
@@ -681,7 +676,8 @@ function isValidGitSummary(value: unknown): value is ScopeGitSummary {
     && typeof value.statusAvailable === "boolean"
     && (value.head === null || typeof value.head === "string")
     && isNonNegativeInteger(value.trackedFileCount)
-    && isNonNegativeInteger(value.untrackedFileCount);
+    && isNonNegativeInteger(value.untrackedFileCount)
+    && (value.unavailableReason === undefined || typeof value.unavailableReason === "string");
 }
 
 function isValidScopeIssue(value: unknown): value is ScopeIssue {
@@ -966,8 +962,8 @@ const changeScopeCheckInputSchema: z.ZodType<ChangeScopeCheckInput> = z.object({
 });
 
 export function createChangeScopeCheckTool(
-  moduleCtx: Plugin.Context,
-  allowedAgents: readonly string[] = CHANGE_SCOPE_CHECK_ALLOWED_AGENTS,
+  moduleCtx: Host,
+  allowedAgents: readonly string[],
 ): DefinedTool {
   return defineTool({
     name: "change-scope-check",
@@ -981,10 +977,13 @@ export function createChangeScopeCheckTool(
     inputSchema: changeScopeCheckInputSchema,
     execute: async (input: ChangeScopeCheckInput, toolCtx: ToolExecutionContext) => {
       if (!isChangeScopeCheckAllowedAgent(toolCtx.agent, allowedAgents)) {
+        const error = allowedAgents.length === 0
+          ? "設定「verification.scopeCheckAllowedAgents」為空，沒有 agent 能使用 change-scope-check。"
+          : `change-scope-check 僅限 ${allowedAgents.join("／")} 使用。`;
         return jsonResult({
           ok: false,
           code: "AGENT_NOT_ALLOWED",
-          error: `change-scope-check 僅限 ${allowedAgents.join("／")} 使用。`,
+          error,
         });
       }
       const action = input?.action;
@@ -998,7 +997,7 @@ export function createChangeScopeCheckTool(
       if (!allowedResult.ok) return jsonResult({ ok: false, code: allowedResult.code, error: allowedResult.error });
 
       if (action === "create") {
-        const git = await collectGitSnapshot(rootResult.root);
+        const git = await collectGitSnapshot(rootResult.root, moduleCtx.capabilities.process);
         const includeGitFiles = input.includeGitFiles === true;
         const scan = scanProject(rootResult.root, pathResult.specs, git, includeGitFiles);
         const baseline: ChangeScopeBaseline = {
@@ -1062,7 +1061,7 @@ export function createChangeScopeCheckTool(
       if (baselineRoot !== rootResult.root || !isInsideWorktree(rootResult.root, baselineRoot) || !isInsideWorktree(baselineRoot, rootResult.root)) {
         return jsonResult({ ok: false, code: "CROSS_PROJECT", error: "變更摘要來自其他專案，不能拿來比較目前狀態。" });
       }
-      const git = await collectGitSnapshot(rootResult.root);
+      const git = await collectGitSnapshot(rootResult.root, moduleCtx.capabilities.process);
       const baselinePaths = baseline.files.map((file) => file.path);
       const scan = scanProject(
         rootResult.root,

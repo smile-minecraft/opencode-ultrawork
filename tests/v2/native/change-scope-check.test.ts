@@ -12,7 +12,11 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changeScopeStoreDirForRoot } from "../../../src/modules/verification/change-scope-check.ts";
+import {
+  changeScopeStoreDirForRoot,
+  createChangeScopeCheckTool,
+} from "../../../src/modules/verification/change-scope-check.ts";
+import { createHostProcess } from "../../../src/kit/process-runner.ts";
 import { verificationModule } from "../../../src/modules/verification/index.ts";
 import { DEFAULT_SETTINGS } from "../../../src/settings/defaults.ts";
 import { createFakeV2Context, fakeV2ToolContext } from "../_fake-v2-context.ts";
@@ -43,7 +47,13 @@ function storedBaseline(root: string, baselineId: string) {
 
 async function loadTools(root: string) {
   const fake = createFakeV2Context({ directory: root });
-  await verificationModule.register({ ctx: fake.ctx, settings: DEFAULT_SETTINGS });
+  await verificationModule.register({
+    host: fake.host,
+    settings: {
+      ...DEFAULT_SETTINGS,
+      verification: { ...DEFAULT_SETTINGS.verification, scopeCheckAllowedAgents: ["build", "ultra"] },
+    },
+  });
   const tool = (name: string) => {
     const definition = fake.added.get(name);
     if (!definition) throw new Error(`tool not registered: ${name}`);
@@ -259,7 +269,7 @@ describe("change-scope-check（新模組）", () => {
     }
   });
 
-  test("工具只允許 Build／Ultra，且不接受複雜 glob", async () => {
+  test("明確設定只允許 Build／Ultra，且不接受複雜 glob", async () => {
     const ws = createWorkspace("scope-check-policy-");
     try {
       const { tool } = await loadTools(ws.root);
@@ -272,6 +282,31 @@ describe("change-scope-check（新模組）", () => {
       }, "build");
       expect(invalid.ok).toBe(false);
       expect(invalid.code).toBe("INVALID_PATH_SPEC");
+    } finally {
+      ws.cleanup();
+    }
+  });
+
+  test("工具工廠要求明確提供授權清單", () => {
+    type FactoryArgs = Parameters<typeof createChangeScopeCheckTool>;
+    const allowlistIsRequired: FactoryArgs extends [unknown, readonly string[]] ? true : false = true;
+    expect(allowlistIsRequired).toBe(true);
+  });
+
+  test("空的 scopeCheckAllowedAgents 拒絕所有 caller 並指出設定 key", async () => {
+    const ws = createWorkspace("scope-check-empty-policy-");
+    try {
+      const fake = createFakeV2Context({ directory: ws.root });
+      await verificationModule.register({ host: fake.host, settings: DEFAULT_SETTINGS });
+      const tool = fake.added.get("change-scope-check");
+      if (!tool) throw new Error("tool not registered: change-scope-check");
+
+      for (const agent of ["qa", "build", undefined] as const) {
+        const result = await executeTool(tool, { action: "create" }, agent);
+        expect(result.code).toBe("AGENT_NOT_ALLOWED");
+        expect(result.error).toContain("verification.scopeCheckAllowedAgents");
+        expect(result.error).not.toContain("僅限  使用");
+      }
     } finally {
       ws.cleanup();
     }
@@ -465,7 +500,7 @@ describe("change-scope-check（新模組）", () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
         timerFiredAt = Date.now();
       })();
-      const result = await runGitCommand(ws.root, ["--version"], 10_000);
+      const result = await runGitCommand(ws.root, ["--version"], 10_000, createHostProcess());
       await timer;
 
       expect(result).toEqual({ ok: true, stdout: "fake-git-output", truncated: false });
@@ -490,7 +525,7 @@ describe("change-scope-check（新模組）", () => {
 
       const { runGitCommand } = await import("../../../src/modules/verification/change-scope-check.ts");
       const startedAt = Date.now();
-      const result = await runGitCommand(ws.root, ["rev-parse", "--verify", "HEAD"], 300);
+      const result = await runGitCommand(ws.root, ["rev-parse", "--verify", "HEAD"], 300, createHostProcess());
       const durationMs = Date.now() - startedAt;
 
       expect(result.ok).toBe(false);
@@ -511,7 +546,7 @@ describe("change-scope-check（新模組）", () => {
       process.env.PATH = emptyBin;
 
       const { runGitCommand } = await import("../../../src/modules/verification/change-scope-check.ts");
-      const result = await runGitCommand(ws.root, ["rev-parse", "--verify", "HEAD"], 5000);
+      const result = await runGitCommand(ws.root, ["rev-parse", "--verify", "HEAD"], 5000, createHostProcess());
 
       expect(result).toEqual({ ok: false, unavailable: true, truncated: false });
     } finally {
@@ -537,7 +572,7 @@ describe("change-scope-check（新模組）", () => {
       process.env.PATH = `${binPath}${delimiter}${process.env.PATH ?? ""}`;
 
       const { runGitCommand } = await import("../../../src/modules/verification/change-scope-check.ts");
-      const direct = await runGitCommand(ws.root, ["ls-files", "-z"], 10_000);
+      const direct = await runGitCommand(ws.root, ["ls-files", "-z"], 10_000, createHostProcess());
       expect(direct.ok).toBe(false);
       if (!direct.ok) expect(direct.truncated).toBe(true);
 
@@ -695,7 +730,7 @@ describe("change-scope-check 授權清單可由設定覆寫", () => {
         verification: { ...DEFAULT_SETTINGS.verification, scopeCheckAllowedAgents: ["qa"] },
       };
       const fake = createFakeV2Context({ directory: ws.root });
-      await verificationModule.register({ ctx: fake.ctx, settings });
+      await verificationModule.register({ host: fake.host, settings });
       const tool = fake.added.get("change-scope-check");
       if (!tool) throw new Error("tool not registered: change-scope-check");
       // qa 在新清單內：過了授權門，走到參數檢查才被擋。

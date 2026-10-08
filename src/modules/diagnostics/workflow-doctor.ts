@@ -42,11 +42,14 @@ import { inspectProjectMigration } from "../../migrate/index.ts";
 import type { MigrationStateReport } from "../../migrate/index.ts";
 import type { InconsistentMarker } from "../workflow/index.ts";
 import { moduleEnabled, type DiagnosticsDeps } from "./deps.ts";
+import type { HostProcess } from "../../kit/process-runner.ts";
 import {
   collectContentRefIntegrity,
   collectContentStoreMarker,
   collectMemoryBudget,
-  memoryWriterConfigCheck,
+  agentListConfigChecks,
+  agentRoleFilesCheck,
+  configuredAgentNames,
   collectMissingContentRef,
   collectPlanRegistryHealth,
   collectStateProjectionDivergence,
@@ -158,7 +161,14 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
       diagnosis.memory_budget = budget.memory_budget;
       warnings.push(...budget.warnings);
       diagnosis.checks.push(...budget.checks);
-      diagnosis.checks.push(memoryWriterConfigCheck(deps.settings.memory.writerAgents));
+      diagnosis.checks.push(...agentListConfigChecks(deps.settings));
+      diagnosis.checks.push(
+        agentRoleFilesCheck(
+          configuredAgentNames(deps.settings),
+          deps.agentRoleFiles?.lookup,
+          deps.agentRoleFiles?.agentsRoot,
+        ),
+      );
 
       // ── 進行中計畫的 contentRef 缺漏 ──
       if (plansReason) {
@@ -311,7 +321,7 @@ export function createWorkflowDoctorTool(deps: DiagnosticsDeps) {
       // 要不要進版控是使用者的全域政策，不算專案資料外洩。
       const sharedWithGlobal = isSameAsGlobalConfigDir(paths.PROJECT_ROOT, deps.globalConfigDir);
       collectUltraworkGitignoreCheck(paths.PROJECT_ROOT, sharedWithGlobal, checks, warnings);
-      collectUltraworkGitTrackingCheck(paths.PROJECT_ROOT, sharedWithGlobal, checks, warnings);
+      collectUltraworkGitTrackingCheck(paths.PROJECT_ROOT, sharedWithGlobal, checks, warnings, deps.host.capabilities.process);
 
       // workflow 模組關閉時，註冊檔來源的檢查沒有資料來源可診斷。
       if (!workflowEnabled) {
@@ -424,8 +434,9 @@ function collectUltraworkGitTrackingCheck(
   sharedWithGlobal: boolean,
   checks: CheckItem[],
   warnings: string[],
+  hostProcess?: HostProcess | null,
 ): void {
-  const health = collectUltraworkGitTracking(projectRoot);
+  const health = collectUltraworkGitTracking(projectRoot, hostProcess);
   if (health.tracked === null) {
     checks.push({
       name: "Ultrawork Git Tracking",

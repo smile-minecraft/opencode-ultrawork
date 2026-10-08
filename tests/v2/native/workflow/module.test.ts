@@ -32,7 +32,7 @@ describe("workflow V2 模組註冊", () => {
         directory: root,
         tools: [{ id: "subagent", description: "派遣子代理" }],
       });
-      const registration = await workflowModule.register({ ctx: fake.ctx, settings: DEFAULT_SETTINGS });
+      const registration = await workflowModule.register({ host: fake.host, settings: DEFAULT_SETTINGS });
       expect(registration).toBeDefined();
 
       for (const name of TOOL_NAMES) {
@@ -54,7 +54,7 @@ describe("workflow V2 模組註冊", () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.modules.workflow = false;
     const fake = createFakeV2Context({ tools: [{ id: "subagent", description: "派遣子代理" }] });
-    const registrations = await registerModules({ ctx: fake.ctx, settings }, [workflowModule]);
+    const registrations = await registerModules({ host: fake.host, settings }, [workflowModule]);
     expect(registrations).toEqual([]);
     expect(fake.added.size).toBe(0);
     expect(fake.toolHooks.size).toBe(0);
@@ -63,15 +63,21 @@ describe("workflow V2 模組註冊", () => {
 });
 
 describe("實作說明指引文字", () => {
-  test("未設定時注入 subagent 的指引逐字等於改動前", () => {
+  test("空清單明確表示目前不檢查七節格式", () => {
+    expect(buildSubagentEvidencePackGuidance([])).toContain(
+      "目前沒有 subagent 需要附實作說明（gatedSubagents 為空）",
+    );
+  });
+
+  test("非空清單列出實際受檢角色", () => {
     const headings = EVIDENCE_PACK_SECTIONS.map((name, index) => `- ### ${index + 1}. ${name}`);
-    expect(buildSubagentEvidencePackGuidance()).toBe(
+    expect(buildSubagentEvidencePackGuidance(["implementer", "debugger", "ultra-coder"])).toBe(
       [
         "<!-- uw-task-evidence-pack-guidance -->",
         "",
         "## 實作說明七節固定格式（subagent prompt 指引）",
         "",
-        "派遣給 `implementer`、`debugger` 或 `ultra-coder` 的 subagent prompt，必須含下列七個 H3 標題，依序、每節非空、不可重複：",
+        "派遣給 `implementer`、`debugger`、`ultra-coder` 的 subagent prompt，必須含下列七個 H3 標題，依序、每節非空、不可重複：",
         "",
         ...headings,
         "",

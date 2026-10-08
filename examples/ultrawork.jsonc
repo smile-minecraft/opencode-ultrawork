@@ -33,14 +33,15 @@
   },
 
   "verification": {
-    // 能呼叫 verification_run 的 agent。預設只有 momus
+    // 能呼叫 verification_run 的 agent 名單（覆寫示例；未設定時為空，沒有 agent 能呼叫）
     "runAllowedAgents": ["momus"],
-    // 能呼叫 change-scope-check 的 agent。預設 build 與 ultra
+    // 能呼叫 change-scope-check 的 agent 名單（覆寫示例；未設定時為空，沒有 agent 能呼叫）
     "scopeCheckAllowedAgents": ["build", "ultra"]
   },
 
   "memory": {
-    "writerAgents": ["memorizer"], // 只允許寫在全域設定
+    // 未設定時 writerAgents 為空（沒有 writer）。只允許寫在全域設定
+    "writerAgents": ["memorizer"],
     "inject": true,
     // 兩層記憶各自的預算，全部選填（沒寫的欄位用內建預設）。
     // budget.global 只允許寫在全域設定，寫在專案層會被忽略並警告；
@@ -65,7 +66,7 @@
       "requireMemoryDisposition": true
     },
     "evidencePack": {
-      // 派發時強制檢查實作說明七節格式的 subagent 名單。
+      // 派發時強制檢查實作說明七節格式的 subagent 名單（覆寫示例；未設定時為空，不再檢查）。
       // 空陣列代表不再檢查；改完要重新載入才生效。
       "gatedSubagents": ["implementer", "debugger", "ultra-coder"]
     }

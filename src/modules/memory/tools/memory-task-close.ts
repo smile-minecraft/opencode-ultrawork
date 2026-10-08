@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { MemoryError, withMemoryLock } from "../layers.ts";
 import { appendLog, readLog } from "../log.ts";
+import { memoryWriterPolicyText } from "../writer-policy.ts";
 import { identity, memoryTool, requireWriter, resolveLayers, type MemoryToolDeps } from "./shared.ts";
 
 const MIN_REASON_CHARS = 8;
@@ -25,7 +26,7 @@ const inputSchema = z.object({
 export function createMemoryTaskCloseTool(deps: MemoryToolDeps) {
   return memoryTool(
     "memory-task-close",
-    "任務在 ARCHIVING 時記錄記憶結案處置，task-state-sync complete 前必須先做。沒有值得記的內容用 outcome:\"none\" 並附具體理由（高風險任務限 memorizer）；recorded 限 memorizer，會自動收集這個任務的寫入紀錄。",
+    `任務在 ARCHIVING 時記錄記憶結案處置，task-state-sync complete 前必須先做。沒有值得記的內容用 outcome:\"none\" 並附具體理由（高風險任務的處置需符合 writer 設定）；recorded 需具記憶寫入權。${memoryWriterPolicyText(deps.writerAgents)}工具會自動收集這個任務的寫入紀錄。`,
     inputSchema,
     async (input, context) => {
       const layers = await resolveLayers(deps, context);

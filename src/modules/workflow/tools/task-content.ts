@@ -272,7 +272,7 @@ export function createTaskContentUpdateTool(runtime: UltraworkRuntimeContext) {
       //   - explicit source 優先。
       //   - standalone task（無 effectivePlanId）：**不從 task.taskContentMode 推導**
       //     （舊版會在 explicit file 寫過一次後以 taskContentMode="file" 靜默續寫，
-      //     繞過 no-planId 規則——Momus finding）。缺省一律拒絕，要求顯式 source:"file"。
+      //     繞過 no-planId 規則——審查發現）。缺省一律拒絕，要求顯式 source:"file"。
       //   - linked task：缺省沿用 task.taskContentMode（file / hybrid → file，其餘 → section）。
       let effectiveSource: "section" | "file";
       if (source !== undefined) {

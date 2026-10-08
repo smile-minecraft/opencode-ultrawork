@@ -134,7 +134,7 @@ describe("workflow registry 寫入鎖", () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
     let failPlans = false;
-    const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS, {
+    const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS, {
       writeFile(path, content) {
         if (failPlans && path.endsWith("plans.json")) throw new Error("注入第二檔失敗");
         atomicWriteFile(path, content);
@@ -244,7 +244,7 @@ describe("workflow registry 寫入鎖", () => {
   test("tasks.json symlink 不會被 readRegistry 讀取外部檔", async () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS);
+    const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS);
     const context = fakeV2ToolContext();
     runtime.lazyEnsure(context);
     const outside = join(root, "outside");
@@ -262,7 +262,7 @@ describe("workflow registry 寫入鎖", () => {
   test("plans.json symlink 不會被 readPlansRegistry 讀取外部檔", async () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS);
+    const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS);
     const context = fakeV2ToolContext();
     runtime.lazyEnsure(context);
     const outside = join(root, "outside");
@@ -280,7 +280,7 @@ describe("workflow registry 寫入鎖", () => {
   test("audit.jsonl symlink 不會被 appendAuditEntry 寫入外部", async () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS);
+    const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS);
     const context = fakeV2ToolContext();
     runtime.lazyEnsure(context);
     const outside = join(root, "outside");
@@ -320,7 +320,7 @@ describe("workflow registry 寫入鎖", () => {
   test("cache symlink 不會讓 registry 或 state lock 在外部建立", async () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS);
+    const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS);
     const context = fakeV2ToolContext();
     runtime.lazyEnsure(context);
     const registry = runtime.readRegistry(context);
@@ -339,7 +339,7 @@ describe("workflow registry 寫入鎖", () => {
   test(".ultrawork ancestor symlink 不會讓 lazyEnsure 或 updateStateMd 寫入外部", async () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS);
+    const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS);
     const context = fakeV2ToolContext();
     runtime.lazyEnsure(context);
     const registry = runtime.readRegistry(context);
@@ -449,7 +449,7 @@ describe("workflow registry 寫入鎖", () => {
   test("unlink 失敗時 fail closed，JSON 與內容檔維持一致", async () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS, {
+    const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS, {
       deleteContent() {
         throw new Error("注入 unlink 失敗");
       },
@@ -487,7 +487,7 @@ describe("workflow registry 寫入鎖", () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
     let failTasks = false;
-    const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS, {
+    const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS, {
       writeFile(path, content) {
         if (failTasks && path.endsWith("tasks.json")) throw new Error("注入 plans 第二檔失敗");
         atomicWriteFile(path, content);
@@ -528,7 +528,7 @@ describe("workflow registry 寫入鎖", () => {
   test("並行交易在鎖內重新讀取並保留兩個操作", async () => {
     const root = await tempRoot();
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
-    const runtime = createWorkflowRuntime(fake.ctx, DEFAULT_SETTINGS);
+    const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS);
     const toolContext = fakeV2ToolContext();
     await Promise.all(["t1", "t2"].map((taskId) => transactRetryBusy(() => runtime.transactRegistries(toolContext, (draft, control) => {
       draft.tasks.tasks[taskId] = { taskId } as never;

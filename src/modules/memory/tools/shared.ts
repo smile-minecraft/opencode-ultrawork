@@ -7,6 +7,7 @@ import { defineTool, type ToolExecutionContext } from "../../../kit/define-tool.
 import { jsonResult } from "../../../kit/json.ts";
 import { budgetForLayer, type MemoryBudgets, type MemoryLayerBudget } from "../constants.ts";
 import { MemoryError, memoryLayers, type MemoryLayer } from "../layers.ts";
+import { memoryWriterPolicyText } from "../writer-policy.ts";
 
 /** 記憶工具需要的最小任務形狀；完整欄位由 workflow 的註冊檔提供。 */
 export interface MemoryTask {
@@ -62,7 +63,7 @@ export function budgetForDepsLayer(deps: MemoryToolDeps, layer: "project" | "glo
  */
 export function requireWriter(deps: MemoryToolDeps, context: ToolExecutionContext): void {
   if (!context.agent || !deps.writerAgents.includes(context.agent)) {
-    throw new MemoryError("WRITER_REQUIRED", "這個操作只限 memorizer，請派 memorizer 處理記憶寫入或整理。");
+    throw new MemoryError("WRITER_REQUIRED", `這個操作需要記憶寫入權限。${memoryWriterPolicyText(deps.writerAgents)}`);
   }
 }
 

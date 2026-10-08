@@ -1,6 +1,6 @@
 import { writeMemoryTopic } from "./_helpers.ts";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_SETTINGS } from "../../../../src/settings/defaults.ts";
@@ -45,6 +45,13 @@ afterEach(async () => {
 function checkByName(r: any, name: string) {
   return r.checks.find((c: any) => c.name === name);
 }
+
+const AGENT_CONFIG_CHECK_NAMES = [
+  "Verification Run Agent Config",
+  "Scope Check Agent Config",
+  "Memory Writer Config",
+  "Evidence Pack Gate Config",
+];
 
 /** 舊版 `17-phase5-tools.test.ts` 的 health_check 區塊。 */
 describe("workflow_health_check 檢查與健康訊號", () => {
@@ -205,7 +212,17 @@ describe("workflow_health_check overallStatus 聚合", () => {
   test("乾淨 workspace（關閉其他模組）→ healthy", async () => {
     const root = await tempRoot();
     writeMinimalWorkspace(root);
-    const fake = await setupDiagnostics(root, diagnosticsOnlySettings());
+    const settings = diagnosticsOnlySettings();
+    settings.verification.runAllowedAgents = ["reviewer"];
+    settings.verification.scopeCheckAllowedAgents = ["builder"];
+    settings.memory.writerAgents = ["memorizer"];
+    settings.workflow.evidencePack.gatedSubagents = ["tester"];
+    const globalDir = join(root, "global");
+    const agentsRoot = join(globalDir, "agents");
+    await mkdir(agentsRoot, { recursive: true });
+    await Promise.all(["reviewer", "builder", "memorizer", "tester"].map((name) =>
+      writeFile(join(agentsRoot, `${name}.md`), `---\ntitle: ${name}\n---\n`)));
+    const fake = await setupDiagnostics(root, settings, { globalDir });
     const r = await callTool(fake, "workflow_health_check", { includeBaselineCheck: false });
     expect(r.ok).toBe(true);
     expect(r.overallStatus).toBe("healthy");
@@ -216,6 +233,7 @@ describe("workflow_health_check overallStatus 聚合", () => {
     expect(r.health_signals.tool_count_expected).toBe(6);
     expect(r.health_signals.tool_count_actual).toBe(6);
     expect(r.health_signals.tool_count_match).toBe(true);
+    expect(checkByName(r, "Agent Role Files").status).toBe("passed");
     await fake.registration?.dispose();
   });
 
@@ -304,6 +322,51 @@ describe("workflow_health_check overallStatus 聚合", () => {
     expect(r.humanSummary).toMatch(/工具數/);
     await fake.registration?.dispose();
   });
+
+  test("四個角色清單皆空時 overallStatus 為 degraded 且有四個 warn item", async () => {
+    const root = await tempRoot();
+    writeMinimalWorkspace(root);
+    const fake = await setupDiagnostics(root, structuredClone(diagnosticsOnlySettings()));
+    const result = await callTool(fake, "workflow_health_check", { includeBaselineCheck: false });
+    const checks = result.checks.filter((item: any) => AGENT_CONFIG_CHECK_NAMES.includes(item.name));
+
+    expect(result.overallStatus).toBe("degraded");
+    expect(checks.map((item: any) => item.status)).toEqual(["warn", "warn", "warn", "warn"]);
+    expect(checks.map((item: any) => item.details)).toEqual([
+      "verification.runAllowedAgents 是空的，沒有 agent 能呼叫 verification_run。",
+      "verification.scopeCheckAllowedAgents 是空的，沒有 agent 能呼叫 change-scope-check。",
+      "memory.writerAgents 是空的，沒有 agent 能寫記憶，高風險任務將無法結案。",
+      "workflow.evidencePack.gatedSubagents 是空的，派遣前的七節格式檢查已停用。",
+    ]);
+    await fake.registration?.dispose();
+  });
+
+  test("四個角色清單有值時逐項通過並列出完整名稱", async () => {
+    const root = await tempRoot();
+    writeMinimalWorkspace(root);
+    const settings = structuredClone(diagnosticsOnlySettings());
+    settings.verification.runAllowedAgents = ["reviewer", "shared"];
+    settings.verification.scopeCheckAllowedAgents = ["builder"];
+    settings.memory.writerAgents = ["scribe"];
+    settings.workflow.evidencePack.gatedSubagents = ["tester"];
+    const globalDir = join(root, "global");
+    const agentsRoot = join(globalDir, "agents");
+    await mkdir(agentsRoot, { recursive: true });
+    await Promise.all(["reviewer", "shared", "builder", "scribe", "tester"].map((name) =>
+      writeFile(join(agentsRoot, `${name}.md`), `---\ntitle: ${name}\n---\n`)));
+    const fake = await setupDiagnostics(root, settings, { globalDir });
+    const result = await callTool(fake, "workflow_health_check", { includeBaselineCheck: false });
+    const checks = result.checks.filter((item: any) => AGENT_CONFIG_CHECK_NAMES.includes(item.name));
+
+    expect(checks.map((item: any) => item.status)).toEqual(["passed", "passed", "passed", "passed"]);
+    expect(checks.map((item: any) => item.details)).toEqual([
+      "允許呼叫 verification_run 的 agent：reviewer、shared。",
+      "允許呼叫 change-scope-check 的 agent：builder。",
+      "允許寫記憶的 agent：scribe。",
+      "受七節格式檢查的 agent：tester。",
+    ]);
+    await fake.registration?.dispose();
+  });
 });
 
 /** 舊版 `17-phase5-tools.test.ts` 對 compareToolNameSets 的純函式測試意圖。 */
@@ -346,7 +409,7 @@ describe("實際工具集合的取得路徑", () => {
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
     const { diagnosticsModule } = await import("../../../../src/modules/diagnostics/index.ts");
     const registration = await diagnosticsModule.register({
-      ctx: fake.ctx,
+      host: fake.host,
       settings: diagnosticsOnlySettings(),
     });
     const result = await callEnvelopeOf(fake, "workflow_health_check");
@@ -388,7 +451,7 @@ describe("實際工具集合的取得路徑", () => {
     delete (fake.ctx.tool as { list?: unknown }).list;
     const { diagnosticsModule } = await import("../../../../src/modules/diagnostics/index.ts");
     const registration = await diagnosticsModule.register({
-      ctx: fake.ctx,
+      host: fake.host,
       settings: diagnosticsOnlySettings(),
     });
     const result = await callEnvelopeOf(fake, "workflow_health_check");

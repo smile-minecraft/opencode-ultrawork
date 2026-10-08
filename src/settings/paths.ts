@@ -7,6 +7,7 @@
  */
 
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 export function resolveGlobalConfigDir(
@@ -18,6 +19,20 @@ export function resolveGlobalConfigDir(
   const xdg = env.XDG_CONFIG_HOME?.trim();
   if (xdg) return join(xdg, "opencode");
   return join(homeDir, ".config", "opencode");
+}
+
+/** 展開設定路徑開頭的 `~`；家目錄可注入，供呼叫端與測試共用同一規則。 */
+export function expandHome(path: string, homeDir: string = homedir()): string {
+  if (path === "~") return homeDir;
+  if (path.startsWith(`~${process.platform === "win32" ? "\\" : "/"}`)) {
+    return join(homeDir, path.slice(2));
+  }
+  return path;
+}
+
+/** 解析 skiller 與診斷共用的 agents 目錄位置。 */
+export function resolveAgentsRoot(agentsDir: string, globalConfigDir: string): string {
+  return agentsDir === "auto" ? join(globalConfigDir, "agents") : expandHome(agentsDir);
 }
 
 /** 全域層：<全域設定資料夾>/.ultrawork/ */

@@ -89,7 +89,7 @@ import { isFinishedTaskState, sameProject, uniq, deriveProjectId } from "../core
 import { recordCompletionTombstone } from "../registry/plan-completion.ts";
 import { resolve } from "node:path";
 import type { UltraworkRuntimeContext } from "../runtime/context-builder.ts";
-import { markSessionTaskBound } from "../runtime/session-binding.ts";
+import type { SessionBindingStore } from "../runtime/session-binding.ts";
 import { appendAuditEntry } from "../runtime/audit-log.ts";
 import { findTaskDisposition } from "../../memory/disposition.ts";
 
@@ -130,7 +130,7 @@ function buildTaskStateMachineDescription(): string {
   lines.push("  · 只認 \"high\" 這一個值，而且申報之後不能撤回，也沒有降級的事件。");
   lines.push("  · 申報為高風險的任務，結案前一定要有獨立審查紀錄：任務走到 REVIEWING 之後，用 event:\"review\" 記下審查結論。");
   lines.push("    - review 在 REVIEWING 或 ARCHIVING 都能記；ARCHIVING 是救援用的例外，修回卡在裡面又缺審查的舊資料，正常流程請在 REVIEWING 送審。");
-  lines.push("    - 三種結論：approve（同意）、concerns（有疑慮）、reject（不同意），對應 agents/momus.md 的審查結論。");
+  lines.push("    - 三種結論：approve（同意）、concerns（有疑慮）、reject（不同意）。");
   lines.push("    - 結論是 concerns 的時候要用 note 寫清楚怎麼處置。");
   lines.push("    - 同意和有疑慮都可以結案，不同意會被擋下；重審以最新一次為準。");
   lines.push("  · 沒審查就轉到 ARCHIVING 會被直接擋下（REVIEW_REQUIRED），不會讓任務先卡進 ARCHIVING 才發現審查沒過——ARCHIVING 之後沒有回 REVIEWING 的路，卡進去就只能放棄。");
@@ -144,7 +144,9 @@ function buildTaskStateMachineDescription(): string {
   return lines.join("\n");
 }
 
-export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
+export function createTaskStateSyncTool(
+  runtime: UltraworkRuntimeContext & { sessionBindings: SessionBindingStore },
+) {
   return defineTool({
     name: "task-state-sync",
     description: buildTaskStateMachineDescription(),
@@ -431,7 +433,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
             error: "審查結論只能填 approve（同意）、concerns（有疑慮）或 reject（不同意）。",
           });
         }
-        // 「有疑慮」在 agents/momus.md「審查結論」的定義是「主代理必須逐項處置之後再決定怎麼走」，
+        // 「有疑慮」代表主代理必須逐項處置後再決定怎麼走，
         // 它能通過結案閘門，所以處置說明一定要留在紀錄裡，否則等於無條件放行。
         if (conclusion === "concerns" && !note?.trim()) {
           return jsonResult({
@@ -664,7 +666,7 @@ export function createTaskStateSyncTool(runtime: UltraworkRuntimeContext) {
         ...(warnings.length ? { warnings } : {}),
       });
       });
-      await markSessionTaskBound(context?.sessionID, taskId);
+      await runtime.sessionBindings.markSessionTaskBound(context?.sessionID, taskId);
       await runtime.updateStateMd(runtime.readRegistry(context), context);
       return result;
     }

@@ -75,7 +75,7 @@ export const TAG_EXPLANATIONS: Record<string, { kind: "descriptive" | "functiona
     explanation: "待辦工作項。必須標 severity，並說明要做什麼與預期影響。",
     examples: [
       "// [TODO:P2] 之後補上單元測試，預期覆蓋正常路徑與兩個 boundary。",
-      "// [TODO:P1 owner=@build] 之後改成 lazyEnsure 避免 cold start 卡住。",
+      "// [TODO:P1 owner=@dev] 之後改成 lazyEnsure 避免 cold start 卡住。",
     ],
   },
   "FIXME": {
@@ -113,7 +113,7 @@ export const TAG_EXPLANATIONS: Record<string, { kind: "descriptive" | "functiona
   "AI_TRAP": {
     kind: "functional",
     explanation: "AI 容易踩坑的陷阱（看似可改但有副作用）。",
-    examples: ["// [AI_TRAP:P1 owner=@build] 不要把 closure state 寫進 module-level 常數。"],
+    examples: ["// [AI_TRAP:P1 owner=@dev] 不要把 closure state 寫進 module-level 常數。"],
   },
   "AI_DO_NOT_EDIT": {
     kind: "functional",

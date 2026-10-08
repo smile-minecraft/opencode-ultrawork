@@ -16,9 +16,27 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+function gatedSettings() {
+  return {
+    ...DEFAULT_SETTINGS,
+    workflow: {
+      ...DEFAULT_SETTINGS.workflow,
+      evidencePack: { gatedSubagents: ["implementer", "debugger", "ultra-coder"] },
+    },
+  };
+}
+
 describe("workflow V2 hooks", () => {
-  test("execute.before 展開代號並修正 heading 層級", async () => {
+  test("預設空 gatedSubagents 時不執行七節檢查", async () => {
     const fake = await setupWorkflow(await tempRoot());
+    const input = { agent: "implementer", prompt: "不是七節也允許" };
+    await fake.toolHooks.get("execute.before")!({ tool: "subagent", sessionID: "s1", input });
+    expect(input.prompt).toBe("不是七節也允許");
+    await fake.registration?.dispose();
+  });
+
+  test("execute.before 展開代號並修正 heading 層級", async () => {
+    const fake = await setupWorkflow(await tempRoot(), gatedSettings());
     const built = await callTool(fake, "work-order-build", validWorkOrder());
     const input = {
       agent: "implementer",
@@ -60,7 +78,7 @@ describe("workflow V2 hooks", () => {
   });
 
   test("七節各種錯誤都擋下，非受控 agent 不受影響", async () => {
-    const fake = await setupWorkflow(await tempRoot());
+    const fake = await setupWorkflow(await tempRoot(), gatedSettings());
     const built = await callTool(fake, "work-order-build", validWorkOrder());
     const resolveInput = { agent: "implementer", prompt: built.data.workOrderRef };
     await fake.toolHooks.get("execute.before")!({ tool: "subagent", sessionID: "s1", input: resolveInput });
@@ -86,7 +104,7 @@ describe("workflow V2 hooks", () => {
   });
 
   test("其他七節錯誤維持原 prompt 並擋下", async () => {
-    const fake = await setupWorkflow(await tempRoot());
+    const fake = await setupWorkflow(await tempRoot(), gatedSettings());
     const input = { agent: "debugger", prompt: "### 1. Task Identity\n只有一節" };
     await expect(fake.toolHooks.get("execute.before")!({
       tool: "subagent", sessionID: "s1", input,
@@ -95,69 +113,59 @@ describe("workflow V2 hooks", () => {
     await fake.registration?.dispose();
   });
 
-  test("Ultra-Coder 依 session 事件的 agent 核對兩次標準路徑", async () => {
-    const fake = await setupWorkflow(await tempRoot(), undefined, {
-      events: [
-        { type: "session.created", data: { sessionID: "ses_attempt1", parentID: "s1", agent: "implementer" } },
-        { type: "session.created", data: { sessionID: "ses_attempt2", parentID: "s1", agent: "debugger" } },
-      ],
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const built = await callTool(fake, "work-order-build", {
-      ...validWorkOrder(),
-      knownEvidence: "ses_attempt1 與 ses_attempt2 都已親自嘗試並失敗。",
-    });
+  test("ultra-coder 的合法七節工作說明不受升級紀錄限制", async () => {
+    const fake = await setupWorkflow(await tempRoot(), gatedSettings());
+    const built = await callTool(fake, "work-order-build", validWorkOrder());
     const input = { agent: "ultra-coder", prompt: built.data.workOrderRef };
     await fake.toolHooks.get("execute.before")!({ tool: "subagent", sessionID: "s1", input });
-    expect(input.prompt).toContain("ses_attempt1");
+    expect(input.prompt).toContain("### 1. Task Identity");
+    expect(input.prompt).not.toBe(built.data.workOrderRef);
     await fake.registration?.dispose();
   });
 
-  test.each([
-    {
-      name: "兩次都是錯誤 agent",
-      evidence: "ses_wrong1 與 ses_wrong2 都已嘗試。",
+  test("session.created 與 session.updated 不讀寫升級紀錄", async () => {
+    const legacy = { parentID: "old-parent", agent: "old-agent", createdAt: 123 };
+    const fake = await setupWorkflow(await tempRoot(), gatedSettings(), {
       events: [
-        { type: "session.created", data: { sessionID: "ses_wrong1", parentID: "s1", agent: "explore" } },
-        { type: "session.created", data: { sessionID: "ses_wrong2", parentID: "s1", agent: "writer" } },
+        { type: "session.created", data: { sessionID: "ses_legacy", parentID: "s1", agent: "implementer" } },
+        { type: "session.updated", data: { sessionID: "ses_new", parentID: "s1", agent: "debugger" } },
       ],
-      message: "它是 explore，不是 Implementer 或 Debugger",
-    },
-    {
-      name: "parent 不符",
-      evidence: "ses_other1 與 ses_wrong3 都已嘗試。",
-      events: [
-        { type: "session.created", data: { sessionID: "ses_other1", parentID: "s2", agent: "implementer" } },
-        { type: "session.created", data: { sessionID: "ses_wrong3", parentID: "s2", agent: "debugger" } },
-      ],
-      message: "不是從目前這個工作階段派出去的",
-    },
-    {
-      name: "工作階段不存在",
-      evidence: "ses_missing1 與 ses_missing2 都已嘗試。",
-      events: [],
-      message: "查不到這個工作階段",
-    },
-    {
-      name: "非標準角色",
-      evidence: "ses_nonstandard1 與 ses_nonstandard2 都已嘗試。",
-      events: [
-        { type: "session.created", data: { sessionID: "ses_nonstandard1", parentID: "s1", agent: "ultra-coder" } },
-        { type: "session.created", data: { sessionID: "ses_nonstandard2", parentID: "s1", agent: "momus" } },
-      ],
-      message: "不是 Implementer 或 Debugger",
-    },
-  ])("Ultra-Coder 阻擋：$name", async ({ evidence, events, message }) => {
-    const fake = await setupWorkflow(await tempRoot(), undefined, { events });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const built = await callTool(fake, "work-order-build", {
-      ...validWorkOrder(),
-      knownEvidence: evidence,
+      prepareStorage: async (storage) => {
+        await storage.set("session/ses_legacy/escalation", legacy);
+      },
     });
-    const input = { agent: "ultra-coder", prompt: built.data.workOrderRef };
-    await expect(fake.toolHooks.get("execute.before")!({
-      tool: "subagent", sessionID: "s1", input,
-    })).rejects.toThrow(message);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await fake.ctx.storage.get("session/ses_legacy/escalation")).toEqual(legacy);
+    expect(await fake.ctx.storage.get("session/ses_new/escalation")).toBeUndefined();
+    await fake.registration?.dispose();
+  });
+
+  test("審查指引不依賴角色檔路徑", async () => {
+    const fake = await setupWorkflow(await tempRoot(), gatedSettings());
+    const description = fake.added.get("task-state-sync").description as string;
+    expect(description).toContain("approve（同意）、concerns（有疑慮）、reject（不同意）");
+    expect(description).not.toContain("agents/momus.md");
+    await fake.registration?.dispose();
+  });
+
+  test("七節錯誤訊息不依賴角色檔路徑", async () => {
+    const fake = await setupWorkflow(await tempRoot(), gatedSettings());
+    let message = "";
+    try {
+      await fake.toolHooks.get("execute.before")!({
+        tool: "subagent",
+        sessionID: "s1",
+        input: { agent: "implementer", prompt: "不是七節" },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("實作準備未通過");
+    expect(message).toContain("codes=[");
+    expect(message).toContain("missing_or_empty=[");
+    expect(message).toContain("example_heading=### 1. Task Identity");
+    expect(message).toContain("issues=[");
+    expect(message).not.toContain("template=agents/build.md");
     await fake.registration?.dispose();
   });
 

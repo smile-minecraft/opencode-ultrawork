@@ -1,10 +1,9 @@
-import type { ModuleDefinition, ModuleRuntime, Registration } from "../types.ts";
+import type { HostRegistration } from "../../host.ts";
+import type { ModuleDefinition, ModuleRuntime } from "../types.ts";
 import { SessionStateStore } from "../../state/store.ts";
 import { createWorkflowRuntime } from "./runtime/v2-runtime.ts";
 import { createWorkOrderStore } from "./tools/work-order-store.ts";
-import { createEscalationTracker } from "./gates/escalation.ts";
 import {
-  EVIDENCE_PACK_GATED_SUBAGENTS,
   EVIDENCE_PACK_SECTION_NUMBERS,
   EVIDENCE_PACK_SECTIONS,
   formatEvidencePackErrors,
@@ -12,8 +11,6 @@ import {
   resolveEvidencePackGatedSubagents,
   validateEvidencePack,
 } from "./gates/evidence-pack.ts";
-import { formatEscalationRejection } from "./gates/escalation.ts";
-import { clearSessionBinding, isSessionTaskBound } from "./runtime/session-binding.ts";
 import { createTaskStateSyncTool } from "./tools/task-state-sync.ts";
 import { createTaskContentReadTool, createTaskContentUpdateTool } from "./tools/task-content.ts";
 import { createPlanStateSyncTool } from "./tools/plan-state-sync.ts";
@@ -42,20 +39,15 @@ export function buildUltraworkStableContext(project: { projectId: string; projec
 }
 
 export function buildSubagentEvidencePackGuidance(
-  gatedSubagents: readonly string[] = EVIDENCE_PACK_GATED_SUBAGENTS,
+  gatedSubagents: readonly string[],
 ): string {
   const headings = EVIDENCE_PACK_SECTIONS.map(
     (name, index) => `- ### ${EVIDENCE_PACK_SECTION_NUMBERS[index]}. ${name}`,
   );
   const gatedNames = gatedSubagents.map((name) => `\`${name}\``).join("、");
-  // 預設清單的措辭維持改動前的逐字內容（「A、B 或 C」）；只有自訂清單才用列舉。
-  const isDefaultList = gatedSubagents.length === EVIDENCE_PACK_GATED_SUBAGENTS.length
-    && EVIDENCE_PACK_GATED_SUBAGENTS.every((name, index) => gatedSubagents[index] === name);
   const scopeLine = gatedSubagents.length === 0
     ? "目前沒有 subagent 需要附實作說明（gatedSubagents 為空）；以下格式僅供需要時參考："
-    : isDefaultList
-      ? "派遣給 `implementer`、`debugger` 或 `ultra-coder` 的 subagent prompt，必須含下列七個 H3 標題，依序、每節非空、不可重複："
-      : `派遣給 ${gatedNames} 的 subagent prompt，必須含下列七個 H3 標題，依序、每節非空、不可重複：`;
+    : `派遣給 ${gatedNames} 的 subagent prompt，必須含下列七個 H3 標題，依序、每節非空、不可重複：`;
   return [
     TOOL_DEFINITION_MARKER,
     "",
@@ -74,24 +66,11 @@ export function buildSubagentEvidencePackGuidance(
 
 export const workflowModule: ModuleDefinition = {
   key: "workflow",
-  register: async (runtime: ModuleRuntime): Promise<Registration> => {
-    const workflow = createWorkflowRuntime(runtime.ctx, runtime.settings);
-    const workOrders = createWorkOrderStore(runtime.ctx.storage);
-    const escalation = createEscalationTracker(runtime.ctx.storage, async (sessionID) => {
-      try {
-        const session = await runtime.ctx.session.get({ sessionID }) as {
-          parentID?: unknown;
-          agent?: unknown;
-        } | null;
-        if (typeof session?.parentID !== "string") return null;
-        return {
-          parentID: session.parentID,
-          agent: typeof session.agent === "string" ? session.agent : null,
-        };
-      } catch {
-        return null;
-      }
-    });
+  register: async (runtime: ModuleRuntime): Promise<HostRegistration> => {
+    const host = runtime.host;
+    const workflow = createWorkflowRuntime(host, runtime.settings);
+    const workOrders = createWorkOrderStore(host.storage);
+    const bindings = workflow.sessionBindings;
 
     const tools = {
       "task-state-sync": createTaskStateSyncTool(workflow),
@@ -111,10 +90,7 @@ export const workflowModule: ModuleDefinition = {
     const guidance = buildSubagentEvidencePackGuidance(
       resolveEvidencePackGatedSubagents(runtime.settings),
     );
-    const toolRegistration = await runtime.ctx.tool.transform((editor) => {
-      for (const tool of Object.values(tools)) {
-        editor.add(tool as never);
-      }
+    const toolRegistration = await host.tools.install(Object.values(tools), (editor) => {
       editor.update("subagent", (tool) => {
         if (!String(tool.description ?? "").includes(TOOL_DEFINITION_MARKER)) {
           tool.description = `${tool.description ?? ""}\n\n${guidance}`;
@@ -122,11 +98,12 @@ export const workflowModule: ModuleDefinition = {
       });
     });
 
-    const beforeRegistration = await runtime.ctx.tool.hook("execute.before", async (event) => {
+    const beforeRegistration = await host.tools.hook("execute.before", async (event) => {
       if (event.tool !== "subagent") return;
       const input = event.input as Record<string, unknown> | null | undefined;
       if (!input) return;
-      const resolution = await workOrders.resolve(input.prompt, event.sessionID);
+      const sessionID = typeof event.sessionID === "string" ? event.sessionID : null;
+      const resolution = await workOrders.resolve(input.prompt, sessionID);
       if (resolution.kind === "resolved") input.prompt = resolution.prompt;
       else if (resolution.kind === "malformed") {
         throw new Error("subagent 的 prompt 夾帶了工作說明代號和其他文字。prompt 只能是 work-order-build 回傳的 workOrderRef 原文；要補內容請重新組裝。");
@@ -150,64 +127,43 @@ export const workflowModule: ModuleDefinition = {
       }
       const validation = validateEvidencePack(prompt);
       if (!validation.valid) throw new Error(formatEvidencePackErrors(validation, agent));
-      if (agent === "ultra-coder") {
-        const verdict = await escalation.verify(event.sessionID, prompt as string);
-        if (!verdict.ok) throw new Error(formatEscalationRejection(verdict));
-      }
     });
 
-    const contextRegistration = await runtime.ctx.session.hook("context", async (event) => {
-      let directory: string = runtime.ctx.location.project?.directory ?? runtime.ctx.location.directory;
+    const contextRegistration = await host.sessions.hook("context", async (event) => {
+      let directory: string = host.roots.projectDirectory ?? host.roots.instanceDirectory ?? "";
       try {
-        const session = await runtime.ctx.session.get({ sessionID: event.sessionID });
+        const session = await host.sessions.get(event.sessionID);
         const value = (session as { location?: { directory?: unknown } } | null)?.location?.directory;
         if (typeof value === "string" && value) directory = value;
       } catch {
         // 保留外掛實例位置。
       }
-      const projectId = runtime.ctx.location.project?.id || directory;
+      const projectId = host.roots.projectId || directory;
       const text = buildUltraworkStableContext({ projectId, projectPath: directory });
       if (Array.isArray(event.system) && !event.system.some((part) => String(part?.text ?? "").includes("[ULTRAWORK CONTEXT]"))) {
         event.system.push({ type: "text", text });
       }
     });
 
-    const compactionRegistration = await runtime.ctx.session.hook("compaction", async (event) => {
-      if (!(await isSessionTaskBound(event.sessionID))) return;
+    const compactionRegistration = await host.sessions.hook("compaction", async (event) => {
+      if (!(await bindings.isSessionTaskBound(event.sessionID))) return;
       if (Array.isArray(event.system)) {
         event.system.push({ type: "text", text: "壓縮這段對話前，先確認目前 Task 的狀態已經同步。" });
       }
     });
 
     const abort = new AbortController();
-    const sessions = new SessionStateStore(runtime.ctx.storage);
+    const sessions = new SessionStateStore(host.storage);
     void (async () => {
-      const events = await runtime.ctx.event.subscribe({ signal: abort.signal });
+      const events = await host.events.subscribe({ signal: abort.signal });
       for await (const event of events) {
-        const data = event.data as {
-          sessionID?: unknown;
-          parentID?: unknown;
-          agent?: unknown;
-        } | null;
+        if (event.type !== "session.deleted") continue;
+        const data = event.data as { sessionID?: unknown } | null;
         const sessionID = typeof data?.sessionID === "string" ? data.sessionID : null;
         if (!sessionID) continue;
-        const eventType = String(event.type);
-        if (eventType === "session.created" || eventType === "session.updated") {
-          let agent = data?.agent;
-          if (typeof agent !== "string") {
-            try {
-              const session = await runtime.ctx.session.get({ sessionID }) as { agent?: unknown } | null;
-              if (typeof session?.agent === "string") agent = session.agent;
-            } catch {
-              agent = null;
-            }
-          }
-          if (data?.parentID !== undefined) await escalation.record(sessionID, data.parentID, agent);
-        } else if (event.type === "session.deleted") {
-          await sessions.clearSession(sessionID);
-          await workOrders.clearSession(sessionID);
-          await clearSessionBinding(sessionID);
-        }
+        await sessions.clearSession(sessionID);
+        await workOrders.clearSession(sessionID);
+        await bindings.clearSessionBinding(sessionID);
       }
     })().catch(() => {
       // 事件訂閱失效不影響工具與其他 hook；下一次重載會重新訂閱。

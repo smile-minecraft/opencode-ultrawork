@@ -208,9 +208,11 @@ export function createSkillerRestoreTool(deps: SkillerDeps) {
           // managed preview：未知 agent 直接拒絕，其餘顯示計畫寫入。
           if (targetAgents.length > 0) {
             const agentsRoot = resolveAgentsRoot(deps);
-            const pre = prevalidateTargetAgents(agentsRoot, targetAgents);
+            const pre = prevalidateTargetAgents(agentsRoot, targetAgents, deps);
             if (!pre.ok) {
-              return jsonError("UNKNOWN_AGENT", `未知的 agent：${pre.unknownAgent}（${pre.reason}）`, "請確認 agents/<name>.md 存在後再試一次。");
+              return deps.agentRoleEditor === null
+                ? jsonError("HOST_CAPABILITY_UNAVAILABLE", `無法編輯角色檔：${pre.reason}。`, "請改用有角色檔改寫能力的宿主後再試一次。")
+                : jsonError("UNKNOWN_AGENT", `未知的 agent：${pre.unknownAgent}（${pre.reason}）`, "請確認 agents/<name>.md 存在後再試一次。");
             }
             groupInfo = {
               ...groupInfo,
@@ -323,9 +325,11 @@ export function createSkillerRestoreTool(deps: SkillerDeps) {
         // managed：未知 agent 在任何 mutation 之前拒絕。
         if (targetAgents.length > 0) {
           const agentsRoot = resolveAgentsRoot(deps);
-          const pre = prevalidateTargetAgents(agentsRoot, targetAgents);
+          const pre = prevalidateTargetAgents(agentsRoot, targetAgents, deps);
           if (!pre.ok) {
-            return jsonError("UNKNOWN_AGENT", `未知的 agent：${pre.unknownAgent}（${pre.reason}）`, "請確認 agents/<name>.md 存在後再試一次。");
+            return deps.agentRoleEditor === null
+              ? jsonError("HOST_CAPABILITY_UNAVAILABLE", `無法編輯角色檔：${pre.reason}。`, "請改用有角色檔改寫能力的宿主後再試一次。")
+              : jsonError("UNKNOWN_AGENT", `未知的 agent：${pre.unknownAgent}（${pre.reason}）`, "請確認 agents/<name>.md 存在後再試一次。");
           }
         }
 
@@ -408,9 +412,11 @@ export function createSkillerRestoreTool(deps: SkillerDeps) {
         // managed：未知 agent 在任何 mutation 之前拒絕（新鮮 agents 目錄）。
         if (targetAgents.length > 0) {
           const lockedAgentsRoot = resolveAgentsRoot(deps);
-          const lockedPre = prevalidateTargetAgents(lockedAgentsRoot, targetAgents);
+          const lockedPre = prevalidateTargetAgents(lockedAgentsRoot, targetAgents, deps);
           if (!lockedPre.ok) {
-            return jsonError("UNKNOWN_AGENT", `未知的 agent：${lockedPre.unknownAgent}（${lockedPre.reason}）`, "請確認 agents/<name>.md 存在後再試一次。");
+            return deps.agentRoleEditor === null
+              ? jsonError("HOST_CAPABILITY_UNAVAILABLE", `無法編輯角色檔：${lockedPre.reason}。`, "請改用有角色檔改寫能力的宿主後再試一次。")
+              : jsonError("UNKNOWN_AGENT", `未知的 agent：${lockedPre.unknownAgent}（${lockedPre.reason}）`, "請確認 agents/<name>.md 存在後再試一次。");
           }
         }
 

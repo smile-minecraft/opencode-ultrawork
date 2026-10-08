@@ -3,19 +3,20 @@
  *
  * 開關開啟時註冊 7 個工具、`execute.before`／`execute.after` hook，
  * 以及 session.created／session.updated 的父子對應事件迴圈；
- * 關閉時完全不碰 ctx。工具定義在 transform 外先建好，
+ * 關閉時完全不碰宿主。工具定義在 transform 外先建好，
  * transform 回呼只做 editor.add，保持同步、可重播、無副作用；
  * 回傳的註冊由外掛卸載時 dispose（工具、hook、事件迴圈都不再存在）。
  */
 
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Plugin } from "@opencode/plugin";
+import type { Host } from "../../host.ts";
+import type { HostRegistration } from "../../host.ts";
 import { isUnsafeRoot } from "../../kit/path-guard.ts";
 import { resolveDirectoryCandidates, resolveSessionDirectory } from "./session-root.ts";
 import { CommentSignalStore, STATE_LOCK_FILENAME } from "./state.ts";
 import { assertSafeLockPath, resolveCanonicalInsideWorktree } from "./containment.ts";
-import type { ModuleDefinition, ModuleRuntime, Registration } from "../types.ts";
+import type { ModuleDefinition, ModuleRuntime } from "../types.ts";
 import { createCommentSignalBaselineTool, createCommentSignalOnlyNewTool, createCommentSignalSuppressTool } from "./baseline-tools.ts";
 import { inspectDirectoryListing, isScannableExplicitPath, listDirectoryFiles, toPolicyRelativePath } from "./file-scan.ts";
 import {
@@ -33,7 +34,7 @@ import { createCommentSignalExplainTool } from "./tool-explain.ts";
 import { createCommentSignalPolicyTool } from "./tool-policy.ts";
 import { createCommentSignalTouchedReportTool } from "./tool-touched-report.ts";
 
-function buildDeps(ctx: Plugin.Context, store: CommentSignalStore): CommentSignalToolDeps {
+function buildDeps(host: Host, store: CommentSignalStore): CommentSignalToolDeps {
   const sourceResolver = (worktree: string, filePath: string): string | null => {
     // lexical＋canonical 雙層 containment：symlink 逃逸直接丟錯（fail closed）。
     const absolute = resolveCanonicalInsideWorktree(filePath, worktree);
@@ -62,7 +63,7 @@ function buildDeps(ctx: Plugin.Context, store: CommentSignalStore): CommentSigna
     resolveRoot: async (toolCtx) => {
       // unsafe root（系統根、關鍵目錄、家目錄本身）讀寫一視同仁拒絕：
       // 家目錄入列是使用者裁定，一致性優先於個別工具的好用度。
-      const root = await resolveSessionDirectory(ctx, toolCtx);
+      const root = await resolveSessionDirectory(host, toolCtx);
       if (isUnsafeRoot(root)) {
         throw new Error(
           `Comment Signal path guard: refusing unsafe root: ${root}（系統根目錄、系統關鍵目錄與家目錄本身不能當專案根目錄）`,
@@ -80,12 +81,13 @@ interface SessionEventData {
 
 /** 模組自己的事件迴圈：父子對應註冊＋刪除清理；abort 時結束。 */
 async function watchCommentSignalEvents(
-  ctx: Pick<Plugin.Context, "event">,
+  host: Host,
   store: CommentSignalStore,
   signal: AbortSignal,
 ): Promise<void> {
   try {
-    for await (const event of ctx.event.subscribe({ signal })) {
+    const events = await host.events.subscribe({ signal });
+    for await (const event of events) {
       const type = (event as { type?: unknown }).type;
       const data = (event as { data?: unknown }).data as SessionEventData | null | undefined;
       if (type === "session.created" || type === "session.updated") {
@@ -108,16 +110,16 @@ async function watchCommentSignalEvents(
 
 export const commentSignalModule: ModuleDefinition = {
   key: "commentSignal",
-  register: async (runtime: ModuleRuntime): Promise<Registration> => {
-    const ctx = runtime.ctx;
-    const store = new CommentSignalStore(ctx.storage, {
+  register: async (runtime: ModuleRuntime): Promise<HostRegistration> => {
+    const host = runtime.host;
+    const store = new CommentSignalStore(host.storage, {
       // 跨行程序列化：鎖檔放 `.ultrawork/cache/locks/`，基底依序嘗試
       // 工作階段位置 → 專案位置 → 外掛實例位置（第一個建得起鎖目錄者）。
       // 全失敗回 null（withFileLock 轉安全預設＋警告，不寫入）。
       resolveLockDir: async (sessionID) => {
         let candidates: string[] = [];
         try {
-          candidates = await resolveDirectoryCandidates(ctx, { sessionID });
+          candidates = await resolveDirectoryCandidates(host, { sessionID });
         } catch {
           return null;
         }
@@ -137,7 +139,7 @@ export const commentSignalModule: ModuleDefinition = {
         return null;
       },
     });
-    const deps = buildDeps(ctx, store);
+    const deps = buildDeps(host, store);
 
     const guardBeforeEdit = makeGuardBeforeEdit({
       sourceResolver: deps.sourceResolver,
@@ -166,17 +168,17 @@ export const commentSignalModule: ModuleDefinition = {
     const suppressTool = createCommentSignalSuppressTool(deps);
     const onlyNewTool = createCommentSignalOnlyNewTool(deps);
 
-    const transformRegistration = await ctx.tool.transform((editor) => {
-      editor.add(checkTool as never);
-      editor.add(policyTool as never);
-      editor.add(touchedReportTool as never);
-      editor.add(explainTool as never);
-      editor.add(baselineTool as never);
-      editor.add(suppressTool as never);
-      editor.add(onlyNewTool as never);
-    });
+    const transformRegistration = await host.tools.install([
+      checkTool,
+      policyTool,
+      touchedReportTool,
+      explainTool,
+      baselineTool,
+      suppressTool,
+      onlyNewTool,
+    ]);
 
-    const beforeRegistration = await ctx.tool.hook("execute.before", async (event) => {
+    const beforeRegistration = await host.tools.hook("execute.before", async (event) => {
       const toolName = (event as { tool?: unknown }).tool;
       if (typeof toolName !== "string" || !FILE_MODIFYING_TOOLS.includes(toolName)) return;
       const sessionID = (event as { sessionID?: unknown }).sessionID;
@@ -194,7 +196,7 @@ export const commentSignalModule: ModuleDefinition = {
           + `收到的 input 欄位：${describeToolInputFields(toolInput)}。`,
         );
       }
-      const worktree = await resolveSessionDirectory(ctx, { sessionID });
+       const worktree = await resolveSessionDirectory(host, { sessionID });
       for (const filePath of filePaths) {
         if (isMarkdownPath(filePath)) continue;
         // 跟掃描政策一致：敏感／dotfile／不支援副檔名不讀不查（跳過，不 throw）。
@@ -206,14 +208,14 @@ export const commentSignalModule: ModuleDefinition = {
       }
     });
 
-    const afterRegistration = await ctx.tool.hook("execute.after", async (event) => {
+    const afterRegistration = await host.tools.hook("execute.after", async (event) => {
       const shaped = event as { status?: unknown; tool?: unknown; sessionID?: unknown; input?: unknown };
       if (shaped.status !== "completed") return;
       if (typeof shaped.tool !== "string" || !FILE_MODIFYING_TOOLS.includes(shaped.tool)) return;
       if (typeof shaped.sessionID !== "string" || !shaped.sessionID) return;
       const filePaths = extractFilePathsFromArgs(shaped.input);
       if (filePaths.length === 0) return;
-      const worktree = await resolveSessionDirectory(ctx, { sessionID: shaped.sessionID });
+       const worktree = await resolveSessionDirectory(host, { sessionID: shaped.sessionID });
       for (const filePath of filePaths) {
         if (isMarkdownPath(filePath)) continue;
         // 跟掃描政策一致：敏感／dotfile／不支援副檔名不記錄、不讀（跳過）。
@@ -231,7 +233,7 @@ export const commentSignalModule: ModuleDefinition = {
     });
 
     const controller = new AbortController();
-    const eventLoop = watchCommentSignalEvents(ctx, store, controller.signal);
+    const eventLoop = watchCommentSignalEvents(host, store, controller.signal);
 
     return {
       dispose: async () => {

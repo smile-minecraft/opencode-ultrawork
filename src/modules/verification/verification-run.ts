@@ -8,8 +8,7 @@
  * - 移除常見 credential env，限制 timeout 與輸出大小。
  */
 
-import type { Plugin } from "@opencode/plugin";
-import { type ChildProcess, spawn as spawnChildProcess } from "node:child_process";
+import type { Host } from "../../host.ts";
 import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { z } from "zod";
@@ -17,7 +16,7 @@ import { defineTool, type DefinedTool, type ToolExecutionContext } from "../../k
 import { jsonResult } from "../../kit/json.ts";
 import { assertSafeWorktreePath, isInsideWorktree, resolveInsideWorktree } from "../../kit/path-guard.ts";
 import { captureTrackedFileSnapshots, type TrackedFileSnapshot } from "./change-scope-check.ts";
-import { isVerificationRunAllowedAgent, VERIFICATION_RUN_ALLOWED_AGENTS } from "./verification-policy.ts";
+import { isVerificationRunAllowedAgent } from "./verification-policy.ts";
 import { isUnsafeRoot, resolveSessionDirectory } from "./session-root.ts";
 
 const SUPPORTED_RUNNERS = [
@@ -65,11 +64,9 @@ export function isPackageScriptAllowed(script: string): boolean {
   return STANDALONE_SCRIPT_PATTERN.test(script) || SUFFIX_ONLY_SCRIPT_PATTERN.test(script);
 }
 // 天花板拉到 10 分鐘：真實整合套件常超過兩分鐘，逾時就被列為證據不足，
-// 直接驅使 momus 改用 bash。預設維持保守，momus 只重跑最小必要的測試。
+// 可能驅使呼叫端改用其他方式執行。只執行最小必要的測試。
 const MAX_TIMEOUT_MS = 600_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
-// 逾時後先 SIGTERM 整個 process group，寬限期過了再 SIGKILL。
-const KILL_GRACE_MS = 4_000;
 const MAX_ARG_COUNT = 128;
 const MAX_ARG_LENGTH = 512;
 // 輸出保留頭尾、丟中段。測試的結論（N pass / M fail、第一個 assertion diff、
@@ -99,59 +96,9 @@ function restrictedEnvironment(runner: Runner): Record<string, string> {
   return env;
 }
 
-// 用 node:child_process 而非 Bun.spawn：Bun.spawn 沒有 process group 支援，
-// subprocess.kill() 只終止直接子程序，測試 runner 起的 dev server／watcher／
-// xdist worker 會變孤兒。detached:true 讓子程序成為新 process group leader，
-// 逾時就能用 process.kill(-pid) 打整個 group。僅 macOS（POSIX）。
+// PATH 解析出的可執行檔位置與實際啟動必須是同一個檔案（TOCTOU）：
 // command[0] 必須是呼叫端用 findExecutableOnPath 解析出的絕對路徑，不傳裸名稱，
-// 避免 spawn 時的 PATH 查找跟檢查時看到的不是同一個檔案（TOCTOU）。
-function spawnRestricted(command: string[], cwd: string, runner: Runner): ChildProcess {
-  return spawnChildProcess(command[0]!, command.slice(1), {
-    cwd,
-    env: restrictedEnvironment(runner),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
-    windowsHide: true,
-    shell: false,
-  });
-}
-
-function killProcessGroup(pid: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    try {
-      process.kill(pid, signal);
-    } catch {
-      // 程序已結束。
-    }
-  }
-}
-
-/** 以 signal 0 探測 process group 是否還有成員；ESRCH 代表整組已死。 */
-function isProcessGroupAlive(pid: number): boolean {
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
-// leader 退出後，給群組一個有上界的等待：SIGTERM 能處理的群組立刻就死；
-// 忽略 SIGTERM 的成員會在升級計時器的 SIGKILL 送達後死亡。上界一到就回傳，
-// 呼叫端不被卡住；還沒死的群組由 unref 的升級計時器補上 SIGKILL。
-const GROUP_EXIT_WAIT_MS = KILL_GRACE_MS + 2_000;
-
-async function waitForProcessGroupExit(pid: number | undefined, maxWaitMs: number): Promise<boolean> {
-  if (pid === undefined) return true;
-  const startedAt = Date.now();
-  for (;;) {
-    if (!isProcessGroupAlive(pid)) return true;
-    if (Date.now() - startedAt >= maxWaitMs) return false;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
+// 實際啟動經宿主程序能力（host.capabilities.process），缺席時由呼叫端明確拒絕。
 
 /**
  * 正規化並驗證 script。
@@ -165,7 +112,7 @@ function normalizeScript(runner: Runner, script: string): string | null {
 }
 
 /**
- * 輕量參數路徑 containment（威脅模型：避免 momus 不小心跑到別的專案的測試，
+ * 輕量參數路徑 containment（威脅模型：避免授權 agent 不小心跑到別的專案的測試，
  * 不是抵抗惡意輸入）。
  *
  * 對每個參數（以及 `--flag=value` 的 value 部分）：解析成相對於 cwd 的絕對
@@ -382,93 +329,6 @@ function resolveCanonicalCwd(requestedCwd: string, worktree: string): string {
   return canonicalCwd;
 }
 
-/**
- * 串流輸出的有界擷取器。保留前 `headMax` 位元組（填滿後不再變動）與後
- * `tailMax` 位元組（丟掉最舊的），中段只累加位元組數。記憶體上界為
- * headMax + tailMax + 單一最大 chunk，與總輸出量、逾時長度都無關。
- */
-class BoundedCapture {
-  private head: Uint8Array;
-  private headLen = 0;
-  private tailChunks: Uint8Array[] = [];
-  private tailBytes = 0;
-  total = 0;
-
-  constructor(private headMax: number, private tailMax: number) {
-    this.head = new Uint8Array(headMax);
-  }
-
-  push(chunk: Uint8Array): void {
-    if (chunk.length === 0) return;
-    this.total += chunk.length;
-    if (this.headLen < this.headMax) {
-      const take = Math.min(this.headMax - this.headLen, chunk.length);
-      this.head.set(chunk.subarray(0, take), this.headLen);
-      this.headLen += take;
-    }
-    this.tailChunks.push(chunk);
-    this.tailBytes += chunk.length;
-    // 丟掉最舊的 chunk，只要丟掉之後剩餘位元組仍 >= tailMax。
-    while (this.tailChunks.length > 1 && this.tailBytes - this.tailChunks[0]!.length >= this.tailMax) {
-      this.tailBytes -= this.tailChunks.shift()!.length;
-    }
-  }
-
-  private tailBuffer(): Uint8Array {
-    if (this.tailChunks.length === 1) return this.tailChunks[0]!;
-    const merged = new Uint8Array(this.tailBytes);
-    let offset = 0;
-    for (const chunk of this.tailChunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return merged;
-  }
-
-  /** 重建輸出文字：未超長時逐位元組還原，超長時「頭 + 省略標記 + 尾」。 */
-  finalize(): { text: string; truncated: boolean; bytes: number } {
-    const decoder = new TextDecoder("utf-8", { fatal: false });
-    if (this.total <= this.headMax) {
-      return { text: decoder.decode(this.head.subarray(0, this.headLen)), truncated: false, bytes: this.total };
-    }
-    const tailAll = this.tailBuffer();
-    const tail = tailAll.length > this.tailMax ? tailAll.subarray(tailAll.length - this.tailMax) : tailAll;
-    const gap = this.total - this.headMax - tail.length;
-    if (gap <= 0) {
-      // 頭尾涵蓋全部（可能重疊）：把 head 與尾端超出 headMax 的位元組接成
-      // 一個陣列再一次解碼，確保跨邊界的多位元組字元逐位元組還原。
-      const tailRemainder = tail.subarray(Math.max(0, tail.length - (this.total - this.headMax)));
-      const merged = new Uint8Array(this.headLen + tailRemainder.length);
-      merged.set(this.head.subarray(0, this.headLen), 0);
-      merged.set(tailRemainder, this.headLen);
-      return { text: decoder.decode(merged), truncated: false, bytes: this.total };
-    }
-    return {
-      text: `${decoder.decode(this.head.subarray(0, this.headLen))}\n...[略過中段 ${gap} 位元組]...\n${decodeTail(tail, decoder)}`,
-      truncated: true,
-      bytes: this.total,
-    };
-  }
-}
-
-/** 解碼尾端位元組前，先跳過開頭可能被切一半的 UTF-8 continuation byte。 */
-function decodeTail(bytes: Uint8Array, decoder: TextDecoder): string {
-  let start = 0;
-  while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1;
-  return decoder.decode(bytes.subarray(start));
-}
-
-function drainStream(stream: NodeJS.ReadableStream | null, sink: BoundedCapture): Promise<void> {
-  if (!stream) return Promise.resolve();
-  return new Promise((resolve) => {
-    // Buffer 的底層 ArrayBuffer 可能被 pool 重用，必須複製一份再交給 sink。
-    stream.on("data", (chunk: Buffer) => sink.push(new Uint8Array(chunk)));
-    stream.on("end", () => resolve());
-    stream.on("close", () => resolve());
-    stream.on("error", () => resolve());
-  });
-}
-
 // 從尾端文字裡撈常見的測試結論行（best-effort，不做 per-runner parser）。
 const SUMMARY_LINE_PATTERN =
   /\b\d+\s+(pass(?:ed|ing)?|fail(?:ed|ing|ures?)?|error(?:s|ed)?|skip(?:ped)?|todo)\b|^\s*(?:tests?|test\s+suites?|assertions?):|(?:^|\s)(?:PASS|FAIL|FAILED|ok|not ok)\b/i;
@@ -637,7 +497,7 @@ function buildRecheckedEvidence(
 }
 
 /** 以本次呼叫的工作階段位置為 worktree；unsafe 或無法解析時 fail closed。 */
-async function resolveVerificationWorktree(moduleCtx: Plugin.Context, toolCtx: ToolExecutionContext):
+async function resolveVerificationWorktree(moduleCtx: Host, toolCtx: ToolExecutionContext):
   Promise<{ ok: true; worktree: string } | { ok: false; error: string; worktree?: string }> {
   const lexicalWorktree = await resolveSessionDirectory(moduleCtx, toolCtx);
   let worktree: string;
@@ -685,8 +545,8 @@ const verificationRunInputSchema: z.ZodType<VerificationRunInput> = z.object({
 });
 
 export function createVerificationRunTool(
-  moduleCtx: Plugin.Context,
-  allowedAgents: readonly string[] = VERIFICATION_RUN_ALLOWED_AGENTS,
+  moduleCtx: Host,
+  allowedAgents: readonly string[],
 ): DefinedTool {
   return defineTool({
     name: "verification_run",
@@ -703,10 +563,13 @@ export function createVerificationRunTool(
     inputSchema: verificationRunInputSchema,
     execute: async (input: VerificationRunInput, toolCtx: ToolExecutionContext) => {
       if (!isVerificationRunAllowedAgent(toolCtx.agent, allowedAgents)) {
+        const error = allowedAgents.length === 0
+          ? "設定「verification.runAllowedAgents」為空，沒有 agent 能使用 verification_run。"
+          : `verification_run 僅限 ${allowedAgents.join("／")} 使用。`;
         return jsonResult({
           ok: false,
           code: "AGENT_NOT_ALLOWED",
-          error: `verification_run 僅限 ${allowedAgents.join("／")} 使用。`,
+          error,
           policy: "restricted-verification-v1",
         });
       }
@@ -866,6 +729,18 @@ export function createVerificationRunTool(
         });
       }
 
+      // 受限程序是宿主能力：缺席時明確拒絕。recheck 不需程序，不受影響；
+      // 輸入驗證（runner／script／args／cwd）在前，兩種宿主的錯誤碼一致。
+      const hostProcess = moduleCtx.capabilities.process;
+      if (!hostProcess) {
+        return jsonResult({
+          ok: false,
+          code: "HOST_CAPABILITY_UNAVAILABLE",
+          error: "宿主未提供程序執行能力，無法啟動驗證程序；recheck（證據重核）不受影響。",
+          policy: "restricted-verification-v1",
+        });
+      }
+
       let resolvedExecutable: string;
       if (runner === "gradle") {
         const wrapper = inspectGradleWrapper(cwd);
@@ -926,9 +801,21 @@ export function createVerificationRunTool(
         return cancelledResult("驗證在啟動前被取消，沒有啟動子程序。");
       }
 
-      let subprocess: ReturnType<typeof spawnRestricted>;
+      // 實際啟動經宿主程序能力：detached 程序群組、升級終止、逾時、
+      // 輸出截斷都在機制服務內；環境過濾是本模組的政策。
+      let procResult: Awaited<ReturnType<typeof hostProcess.run>>;
       try {
-        subprocess = spawnRestricted(command, cwd, runner);
+        procResult = await hostProcess.run({
+          command: command[0]!,
+          args: command.slice(1),
+          cwd,
+          env: restrictedEnvironment(runner),
+          timeoutMs,
+          signal: toolCtx.signal,
+          processGroup: true,
+          headBytes: OUTPUT_HEAD_BYTES,
+          tailBytes: OUTPUT_TAIL_BYTES,
+        });
       } catch (error) {
         const trackedAfter = trackedFiles === undefined ? undefined : captureTrackedFileSnapshots(worktree, trackedFiles);
         return jsonResult({
@@ -942,101 +829,21 @@ export function createVerificationRunTool(
         });
       }
 
-      const stdoutCapture = new BoundedCapture(OUTPUT_HEAD_BYTES, OUTPUT_TAIL_BYTES);
-      const stderrCapture = new BoundedCapture(OUTPUT_HEAD_BYTES, OUTPUT_TAIL_BYTES);
-      const drained = Promise.all([
-        drainStream(subprocess.stdout, stdoutCapture),
-        drainStream(subprocess.stderr, stderrCapture),
-      ]);
-
-      const childPid = subprocess.pid;
-      let timedOut = false;
-      let cancelled = false;
-      let settled = false;
-      let spawnError: Error | undefined;
-      let forceExit: (() => void) | undefined;
-      const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-        forceExit = () => resolve({ code: null, signal: null });
-        subprocess.once("exit", (code, signal) => resolve({ code, signal }));
-        subprocess.once("error", (err) => {
-          spawnError = err instanceof Error ? err : new Error(String(err));
-          resolve({ code: null, signal: null });
-        });
-      });
-
-      // 逾時與取消都打整個 process group：先 SIGTERM，寬限期後 SIGKILL，
-      // 再一個寬限期還沒結束就不再等，直接回傳（不留孤兒，也不卡住呼叫端）。
-      // 升級計時器一律 unref：提前回傳也不會被取消，SIGKILL 照樣送達；
-      // 只是不再用它們hold 住事件迴圈。
-      const killTimers: ReturnType<typeof setTimeout>[] = [];
-      const clearKillTimers = () => {
-        for (const killTimer of killTimers.splice(0)) clearTimeout(killTimer);
-      };
-      const trackKillTimer = (killTimer: ReturnType<typeof setTimeout>) => {
-        if (typeof killTimer.unref === "function") killTimer.unref();
-        killTimers.push(killTimer);
-        return killTimer;
-      };
-      const killProcessTree = (pid: number | undefined) => {
-        if (pid === undefined) return;
-        killProcessGroup(pid, "SIGTERM");
-        trackKillTimer(setTimeout(() => {
-          killProcessGroup(pid, "SIGKILL");
-          trackKillTimer(setTimeout(() => forceExit?.(), KILL_GRACE_MS));
-        }, KILL_GRACE_MS));
-      };
-      const timer = setTimeout(() => {
-        timedOut = true;
-        killProcessTree(childPid);
-      }, timeoutMs);
-
-      const abortSignal = toolCtx.signal;
-      const handleAbort = () => {
-        if (settled || timedOut) return;
-        cancelled = true;
-        clearTimeout(timer);
-        killProcessTree(childPid);
-      };
-      if (abortSignal) {
-        if (abortSignal.aborted) handleAbort();
-        else abortSignal.addEventListener("abort", handleAbort, { once: true });
-      }
-
-      const exit = await exitPromise;
-      settled = true;
-      clearTimeout(timer);
-      abortSignal?.removeEventListener("abort", handleAbort);
-      if (timedOut || cancelled) {
-        // leader 退出不代表整組全死：確認群組終止才清升級計時器，否則留著
-        // unref 計時器讓 SIGKILL 照樣送達。等待有上界，呼叫端不會被卡住。
-        if (await waitForProcessGroupExit(childPid, GROUP_EXIT_WAIT_MS)) clearKillTimers();
-      }
-      // 程序已結束，pipe 應隨即關閉；防禦性上限避免 stream 卡住時掛死。
-      await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 2000))]);
-
-      if (spawnError && !timedOut && !cancelled) {
-        return jsonResult({
-          ok: false,
-          code: "SPAWN_FAILED",
-          error: `啟動驗證工具失敗：${spawnError.message}`,
-          command,
-          cwd,
-          policy: "restricted-verification-v1",
-        });
-      }
-
-      const stdout = stdoutCapture.finalize();
-      const stderr = stderrCapture.finalize();
+      const timedOut = procResult.timedOut;
+      const cancelled = procResult.cancelled;
+      const stdout = { text: procResult.stdout, bytes: procResult.stdoutBytes, truncated: procResult.truncated };
+      const stderr = { text: procResult.stderr, bytes: procResult.stderrBytes, truncated: procResult.truncated };
+      const outputTruncated = procResult.truncated;
 
       if (cancelled) {
         const trackedAfter = trackedFiles === undefined ? undefined : captureTrackedFileSnapshots(worktree, trackedFiles);
-        const exitSignal = exit.signal ?? null;
+        const exitSignal = procResult.signal;
         const summaryLines = extractSummaryLines(`${stdout.text}\n${stderr.text}`);
         const evidence = buildVerificationEvidence(
           trackedFiles,
           trackedBefore,
           trackedAfter,
-          { ok: false, outputTruncated: stdout.truncated || stderr.truncated },
+          { ok: false, outputTruncated },
         );
         return jsonResult({
           ok: false,
@@ -1064,8 +871,8 @@ export function createVerificationRunTool(
         }, null, 2);
       }
 
-      const exitCode = timedOut ? null : exit.code;
-      const exitSignal = exit.signal ?? null;
+      const exitCode = timedOut ? null : procResult.exitCode;
+      const exitSignal = procResult.signal;
       const summaryLines = extractSummaryLines(`${stdout.text}\n${stderr.text}`);
       const trackedAfter = trackedFiles === undefined ? undefined : captureTrackedFileSnapshots(worktree, trackedFiles);
       const evidence = buildVerificationEvidence(

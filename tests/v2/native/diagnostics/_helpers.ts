@@ -44,7 +44,7 @@ export async function setupDiagnostics(
     tools: options.tools ?? [],
     ...(options.globalDir !== undefined ? { options: { globalDir: options.globalDir } } : {}),
   });
-  const runtime: ModuleRuntime = { ctx: fake.ctx, settings };
+  const runtime: ModuleRuntime = { host: fake.host, settings };
   const modules: ModuleDefinition[] = [diagnosticsModule, ...(options.extraModules ?? [])];
   const registrations = [];
   for (const module of modules) {

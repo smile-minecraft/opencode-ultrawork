@@ -1,0 +1,42 @@
+{
+  "version": "4.0",
+  "projectId": "project",
+  "projectPath": "/fixture-placeholder/project",
+  "activeTaskIds": [
+    "t-fixture-active"
+  ],
+  "taskCursor": "t-fixture-active",
+  "tasks": {
+    "t-fixture-active": {
+      "taskId": "t-fixture-active",
+      "projectId": "project",
+      "projectPath": "/fixture-placeholder/project",
+      "title": "Fixture 進行中任務",
+      "state": "IN_PROGRESS",
+      "owner": "fixture-owner",
+      "priority": "medium",
+      "updatedAt": "2026-10-07T18:01:27.278Z",
+      "history": [
+        "| 2026-10-07T18:01:27.259Z | (NEW) → NEW | fixture-owner | 建立任務 |",
+        "| 2026-10-07T18:01:27.265Z | NEW → PLANNED | fixture-owner | 狀態轉換 |",
+        "| 2026-10-07T18:01:27.267Z | PLANNED → IN_PROGRESS | fixture-owner | 狀態轉換 |"
+      ],
+      "planId": "p-fixture-20261007",
+      "planStep": 1
+    },
+    "t-fixture-done": {
+      "taskId": "t-fixture-done",
+      "projectId": "project",
+      "projectPath": "/fixture-placeholder/project",
+      "title": "Fixture 已終態任務",
+      "state": "CANCELLED",
+      "owner": "fixture-owner",
+      "priority": "low",
+      "updatedAt": "2026-10-07T18:01:27.271Z",
+      "history": [
+        "| 2026-10-07T18:01:27.269Z | (NEW) → NEW | fixture-owner | 建立任務 |",
+        "| 2026-10-07T18:01:27.271Z | NEW → CANCELLED | fixture-owner | Fixture 需要一個已終態項目，以取消結案。 |"
+      ]
+    }
+  }
+}

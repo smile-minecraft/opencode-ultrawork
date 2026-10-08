@@ -125,7 +125,9 @@ export function createWorkflowL1CheckTool(deps: DiagnosticsDeps) {
           effectiveLimit: limit,
           hardLimit: limit,
           status: exceeded ? "warn" : "ok",
-          suggestion: exceeded ? "請派 memorizer 拆分主題或精簡 description。" : "無",
+          suggestion: exceeded
+            ? "請由 memory.writerAgents 中設定的角色拆分主題或精簡 description。"
+            : "無",
         });
         if (exceeded) {
           report.ok = false;

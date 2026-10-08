@@ -21,7 +21,7 @@ describe("skiller 原生模組註冊", () => {
   test("模組開啟時註冊 11 個 skiller 工具", async () => {
     const fake = createFakeV2Context({ directory: "/tmp/skiller-project" });
     await skillerModule.register({
-      ctx: fake.ctx,
+      host: fake.host,
       settings: {
         modules: { skiller: true },
         skiller: { personalSkillRoot: "/tmp/skills", agentsDir: "/tmp/agents" },

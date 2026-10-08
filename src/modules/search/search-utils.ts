@@ -8,7 +8,7 @@
 
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
-import type { Plugin } from "@opencode/plugin";
+import type { Host } from "../../host.ts";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 import { jsonError } from "../../kit/json.ts";
 import {
@@ -36,18 +36,15 @@ export type RootResolver = (toolCtx: ToolExecutionContext) => Promise<string>;
  * 每次工具執行時解析工作階段位置：先問 session 的 location.directory，
  * 取不到才退回外掛位置（project 目錄優先）。
  */
-export async function resolveWorktreeRoot(ctx: Plugin.Context, toolCtx: ToolExecutionContext): Promise<string> {
+export async function resolveWorktreeRoot(host: Host, toolCtx: ToolExecutionContext): Promise<string> {
   try {
-    const get = (ctx.session as unknown as { get: (args: { sessionID: string }) => Promise<unknown> }).get;
-    const session = (await get({ sessionID: toolCtx.sessionID })) as
-      | { location?: { directory?: unknown } }
-      | undefined;
+    const session = await host.sessions.get(toolCtx.sessionID);
     const directory = session?.location?.directory;
     if (typeof directory === "string" && directory.length > 0) return directory;
   } catch {
     // 讀不到工作階段就退回外掛位置，不讓工具直接失敗。
   }
-  return ctx.location.project?.directory ?? ctx.location.directory;
+  return host.roots.projectDirectory ?? host.roots.instanceDirectory ?? "";
 }
 
 export function normalizeRelativePath(value: string): string {
@@ -150,4 +147,3 @@ export function validateBoundedInteger(
   }
   return undefined;
 }
-

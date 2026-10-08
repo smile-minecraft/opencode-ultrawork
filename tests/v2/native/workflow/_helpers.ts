@@ -19,7 +19,7 @@ export async function setupWorkflow(
   });
   if (options.prepareStorage) await options.prepareStorage(fake.ctx.storage);
   fake.events.push(...(options.events ?? []));
-  const runtime: ModuleRuntime = { ctx: fake.ctx, settings };
+  const runtime: ModuleRuntime = { host: fake.host, settings };
   const registration = await workflowModule.register(runtime);
   await Promise.resolve();
   return { ...fake, registration };

@@ -72,7 +72,7 @@
 | 53-readiness-consistency | 本任務・群組覆蓋 | `state-content.test.ts` |
 | 54-acceptance-gate | 本任務 | `state-content.test.ts` |
 | 55-skill-catalog | skills | 已移植別處；唯一 repo 專屬測試保留 skip |
-| 56-ultra-coder-escalation | 本任務 | `hooks.test.ts` |
+| 56-ultra-coder-escalation | 已退休（escalation gate 已移除） | 對照列保留，案例不再移植 |
 | work-order-build | 本任務 | `work-order-store.test.ts`、`hooks.test.ts` |
 | gates/evidence-pack | 本任務・群組覆蓋 | `hooks.test.ts` |
 | comment-signal/** | comment-signal | 已移植別處 |

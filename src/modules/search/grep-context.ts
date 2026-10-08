@@ -5,7 +5,6 @@
  * 根目錄改由呼叫端解析好的字串傳入，不再讀執行期 context。
  */
 
-import { spawn } from "node:child_process";
 import { createReadStream, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { isAbsolute, join, relative } from "node:path";
@@ -14,6 +13,7 @@ import { defineTool, type DefinedTool, type ToolExecutionContext } from "../../k
 import { jsonError, jsonResult } from "../../kit/json.ts";
 import { formatNumberedLines, truncateLine } from "../../kit/lines.ts";
 import { assertSafeWorktreePath } from "../../kit/path-guard.ts";
+import type { HostProcess } from "../../kit/process-runner.ts";
 import {
   isBinaryFile,
   isSensitivePath,
@@ -53,7 +53,10 @@ const GrepContextInput = z.object({
   caseSensitive: z.boolean().optional(),
 });
 
-export function createGrepContextTool(resolveRoot: RootResolver): DefinedTool {
+/** 單次 rg 呼叫的上限；超過就終止並回 SEARCH_TIMEOUT，不卡住呼叫端。 */
+const RG_COMMAND_TIMEOUT_MS = 10_000;
+
+export function createGrepContextTool(resolveRoot: RootResolver, hostProcess?: HostProcess | null): DefinedTool {
   return defineTool({
     name: "grep_context",
     description: "在 worktree 內搜尋文字，回傳有界、可分頁且帶行號的結構化結果",
@@ -103,7 +106,15 @@ export function createGrepContextTool(resolveRoot: RootResolver): DefinedTool {
       for (const glob of args.exclude ?? []) rgArgs.push("--glob", glob.startsWith("!") ? glob : `!${glob}`);
       rgArgs.push("--", args.pattern, target.absolutePath);
 
-      const searched = await collectMatches(rgArgs, target.worktreeRoot, offset, maxMatches, toolCtx.signal);
+      // rg 經宿主程序能力執行：缺席時明確拒絕，不直接啟動程序。
+      if (!hostProcess) {
+        return jsonError(
+          "HOST_CAPABILITY_UNAVAILABLE",
+          "宿主未提供程序執行能力，無法執行 ripgrep 搜尋。",
+          "請改用有程序執行能力的宿主後再試一次。",
+        );
+      }
+      const searched = await collectMatches(rgArgs, target.worktreeRoot, offset, maxMatches, hostProcess, toolCtx.signal);
       if (!searched.ok) return jsonError(searched.code, searched.error);
       const attached = await attachContext(searched.matches, target.worktreeRoot, searchContext);
       if (!attached.ok) return jsonError(attached.code, attached.error);
@@ -129,25 +140,25 @@ async function collectMatches(
   worktreeRoot: string,
   offset: number,
   maxMatches: number,
+  hostProcess: HostProcess,
   abort?: AbortSignal,
 ): Promise<{ ok: true; matches: SearchMatch[]; hasMore: boolean } | { ok: false; code: string; error: string }> {
   if (abort?.aborted) return { ok: false, code: "ABORTED", error: "Search was aborted" };
-  return await new Promise((resolve) => {
-    const child = spawn("rg", rgArgs, { cwd: worktreeRoot, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+  // 提前停止走同一個 Abort 語意：名額滿了就 abort 自己的控制器，
+  // 機制負責終止 rg；呼叫端的取消則轉發進來。
+  const stop = new AbortController();
+  let parentAborted = false;
+  const forwardAbort = () => { parentAborted = true; stop.abort(); };
+  abort?.addEventListener("abort", forwardAbort, { once: true });
+  try {
     const matches: SearchMatch[] = [];
     let seen = 0;
     let hasMore = false;
     let stdoutBuffer = "";
-    let timedOut = false;
-    let aborted = false;
-
-    const stop = () => child.kill("SIGTERM");
-    const timer = setTimeout(() => { timedOut = true; stop(); }, 10_000);
-    const onAbort = () => { aborted = true; stop(); };
-    abort?.addEventListener("abort", onAbort, { once: true });
+    const decoder = new TextDecoder("utf-8");
 
     const consume = (line: string) => {
-      if (!line) return;
+      if (!line || hasMore) return;
       try {
         const event = JSON.parse(line);
         if (event.type !== "match") return;
@@ -158,7 +169,7 @@ async function collectMatches(
         const resolved = resolveMatchPath(rawPath, worktreeRoot);
         if (!resolved.ok) return;
         if (seen < offset) { seen += 1; return; }
-        if (matches.length >= maxMatches) { hasMore = true; stop(); return; }
+        if (matches.length >= maxMatches) { hasMore = true; stop.abort(); return; }
         seen += 1;
         const rawText = String(data.lines?.text ?? "").replace(/\r?\n$/, "");
         matches.push({
@@ -174,32 +185,41 @@ async function collectMatches(
       }
     };
 
-    child.stdout.setEncoding("utf-8");
-    child.stdout.on("data", (chunk: string) => {
-      stdoutBuffer += chunk;
-      const lines = stdoutBuffer.split("\n");
-      stdoutBuffer = lines.pop() ?? "";
-      for (const line of lines) consume(line);
-    });
-    child.stderr.resume();
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      abort?.removeEventListener("abort", onAbort);
-      resolve({ ok: false, code: "RG_UNAVAILABLE", error: error.message });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      abort?.removeEventListener("abort", onAbort);
-      consume(stdoutBuffer);
-      if (aborted) return resolve({ ok: false, code: "ABORTED", error: "Search was aborted" });
-      if (timedOut) return resolve({ ok: false, code: "SEARCH_TIMEOUT", error: "Search exceeded 10 seconds" });
-      if (code !== 0 && code !== 1 && !hasMore) {
-        // 不回傳 stderr：ripgrep 錯誤訊息可能含絕對路徑，只保留 numeric exit code。
-        return resolve({ ok: false, code: "RG_ERROR", error: `ripgrep failed with exit code ${code}` });
-      }
-      resolve({ ok: true, matches, hasMore });
-    });
-  });
+    let result: Awaited<ReturnType<typeof hostProcess.run>>;
+    try {
+      result = await hostProcess.run({
+        command: "rg",
+        args: rgArgs,
+        cwd: worktreeRoot,
+        timeoutMs: RG_COMMAND_TIMEOUT_MS,
+        signal: stop.signal,
+        stderrMode: "ignore",
+        onStdoutChunk: (chunk) => {
+          if (hasMore) return;
+          stdoutBuffer += decoder.decode(chunk, { stream: true });
+          const lines = stdoutBuffer.split("\n");
+          stdoutBuffer = lines.pop() ?? "";
+          for (const line of lines) {
+            consume(line);
+            if (hasMore) break;
+          }
+        },
+      });
+    } catch (error) {
+      return { ok: false, code: "RG_UNAVAILABLE", error: error instanceof Error ? error.message : String(error) };
+    }
+    consume(stdoutBuffer + decoder.decode());
+    if (parentAborted || abort?.aborted) return { ok: false, code: "ABORTED", error: "Search was aborted" };
+    if (hasMore) return { ok: true, matches, hasMore };
+    if (result.timedOut) return { ok: false, code: "SEARCH_TIMEOUT", error: "Search exceeded 10 seconds" };
+    if (result.exitCode !== 0 && result.exitCode !== 1) {
+      // 不回傳 stderr：ripgrep 錯誤訊息可能含絕對路徑，只保留 numeric exit code。
+      return { ok: false, code: "RG_ERROR", error: `ripgrep failed with exit code ${result.exitCode}` };
+    }
+    return { ok: true, matches, hasMore };
+  } finally {
+    abort?.removeEventListener("abort", forwardAbort);
+  }
 }
 
 /**

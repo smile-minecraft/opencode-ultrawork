@@ -6,7 +6,8 @@
  */
 
 import type { UltraworkSettings } from "../settings/defaults.ts";
-import type { ModuleDefinition, ModuleRuntime, Registration } from "./types.ts";
+import type { HostRegistration } from "../host.ts";
+import type { ModuleDefinition, ModuleRuntime } from "./types.ts";
 
 /**
  * 開關判斷的單一來源：只有 boolean false 算關閉，其餘（含 0／null／字串等
@@ -30,8 +31,8 @@ export function isModuleEnabled(settings: UltraworkSettings | undefined, key: st
 export async function registerModules(
   runtime: ModuleRuntime,
   modules: readonly ModuleDefinition[],
-): Promise<Registration[]> {
-  const registrations: Registration[] = [];
+): Promise<HostRegistration[]> {
+  const registrations: HostRegistration[] = [];
   try {
     for (const module of modules) {
       if (!isModuleEnabled(runtime.settings, module.key)) continue;

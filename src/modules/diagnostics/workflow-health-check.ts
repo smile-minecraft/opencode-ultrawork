@@ -42,7 +42,9 @@ import {
 import {
   collectContentStoreMarker,
   collectMemoryBudget,
-  memoryWriterConfigCheck,
+  agentListConfigChecks,
+  agentRoleFilesCheck,
+  configuredAgentNames,
   collectMissingContentRef,
   collectPlanRegistryHealth,
   collectStateProjectionDivergence,
@@ -223,7 +225,14 @@ export function createWorkflowHealthCheckTool(deps: DiagnosticsDeps) {
       result.memory_budget = budget.memory_budget;
       warnings.push(...budget.warnings);
       result.checks.push(...budget.checks);
-      result.checks.push(memoryWriterConfigCheck(deps.settings.memory.writerAgents));
+      result.checks.push(...agentListConfigChecks(deps.settings));
+      result.checks.push(
+        agentRoleFilesCheck(
+          configuredAgentNames(deps.settings),
+          deps.agentRoleFiles?.lookup,
+          deps.agentRoleFiles?.agentsRoot,
+        ),
+      );
 
       if (plansReason) {
         skip("Plan Content Ref Coverage", plansReason);

@@ -1,0 +1,43 @@
+{
+  "version": "1.0",
+  "projectId": "project",
+  "projectPath": "/fixture-placeholder/project",
+  "activePlanIds": [
+    "p-fixture-20261007"
+  ],
+  "planCursor": "p-fixture-20261007",
+  "plans": {
+    "p-fixture-20261007": {
+      "planId": "p-fixture-20261007",
+      "projectId": "project",
+      "projectPath": "/fixture-placeholder/project",
+      "title": "Fixture 進行中計畫",
+      "state": "IN_PROGRESS",
+      "owner": "fixture-owner",
+      "priority": "medium",
+      "createdAt": "2026-10-07T18:01:27.274Z",
+      "updatedAt": "2026-10-07T18:01:27.284Z",
+      "taskIds": [
+        "t-fixture-active"
+      ],
+      "finishedTaskIds": [],
+      "dependencyGraph": {
+        "nodes": [
+          {
+            "id": "t-fixture-active",
+            "taskId": "t-fixture-active",
+            "title": "Fixture 進行中任務"
+          }
+        ],
+        "edges": []
+      },
+      "history": [
+        "| 2026-10-07T18:01:27.281Z | CONTENT_CREATE | system | version=1 |",
+        "| 2026-10-07T18:01:27.282Z | DRAFT → PLANNED | fixture-owner | 狀態轉換 |",
+        "| 2026-10-07T18:01:27.284Z | PLANNED → IN_PROGRESS | fixture-owner | 狀態轉換 |"
+      ],
+      "contentRef": ".ultrawork/plans/p-fixture-20261007.md",
+      "contentVersion": 1
+    }
+  }
+}

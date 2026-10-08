@@ -29,11 +29,18 @@ afterEach(() => {
 });
 
 /** workflow 與 memory 兩個模組註冊在同一個假 context 上。 */
-async function setup(options: { globalDir?: string } = {}) {
+async function setup(options: { globalDir?: string; writerAgents?: string[] | null } = {}) {
   const root = tempRoot();
   const globalDir = options.globalDir === "same" ? root : (options.globalDir ?? tempRoot("memory-gate-global-"));
   const fake = createFakeV2Context({ directory: root, sessionDirectory: root, options: { globalDir } });
-  const runtime: ModuleRuntime = { ctx: fake.ctx, settings: DEFAULT_SETTINGS };
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    memory: {
+      ...DEFAULT_SETTINGS.memory,
+      writerAgents: options.writerAgents === null ? DEFAULT_SETTINGS.memory.writerAgents : (options.writerAgents ?? ["memorizer"]),
+    },
+  };
+  const runtime: ModuleRuntime = { host: fake.host, settings };
   const registrations = [await workflowModule.register(runtime), await memoryModule.register(runtime)];
   const call = async (name: string, input: Record<string, unknown>, agent = "build"): Promise<any> => {
     const result = await fake.added.get(name).execute(input, { sessionID: "s1", agent });
@@ -75,6 +82,63 @@ describe("記憶結案檢查：完整流程", () => {
     expect(completed.ok).toBe(true);
     const registry = JSON.parse(readFileSync(join(env.root, ".ultrawork/tasks.json"), "utf8"));
     expect(registry.tasks.t1.history.at(-1)).toContain(`memory=recorded#${closed.data.seq}`);
+    await env.dispose();
+  });
+
+  test("設定的任意 writer 可完成高風險任務的記憶寫入與結案", async () => {
+    const env = await setup({ writerAgents: ["agent-a"] });
+    await createArchivingTask(env, "t1", "high");
+    expect(
+      (await env.call("memory-task-close", { taskId: "t1", outcome: "none", reason: "沒有值得保留的新知識" }, "agent-b")).code,
+    ).toBe("WRITER_REQUIRED");
+    expect((await env.call("memory-write", { ...TOPIC, taskId: "t1" }, "agent-a")).ok).toBe(true);
+    expect((await env.call("memory-task-close", { taskId: "t1", outcome: "recorded" }, "agent-a")).ok).toBe(true);
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).ok).toBe(true);
+    await env.dispose();
+  });
+
+  test("writer 清單未設定、為空、單名與多名時 complete 只接受清單中的處置者", async () => {
+    const cases: { label: string; writerAgents: string[] | null; dispositionAgent: string; completes: boolean }[] = [
+      { label: "未設定", writerAgents: null, dispositionAgent: "agent-a", completes: false },
+      { label: "空清單", writerAgents: [], dispositionAgent: "agent-a", completes: false },
+      { label: "單名內", writerAgents: ["agent-a"], dispositionAgent: "agent-a", completes: true },
+      { label: "單名外", writerAgents: ["agent-a"], dispositionAgent: "agent-b", completes: false },
+      { label: "多名內", writerAgents: ["agent-a", "agent-b"], dispositionAgent: "agent-b", completes: true },
+      { label: "多名外", writerAgents: ["agent-a", "agent-b"], dispositionAgent: "agent-c", completes: false },
+    ];
+
+    for (const [index, item] of cases.entries()) {
+      const env = await setup({ writerAgents: item.writerAgents });
+      const taskId = `writer-matrix-${index}`;
+      await createArchivingTask(env, taskId, "high");
+      const layer = memoryLayer(env.root);
+      await withMemoryLock(layer, () =>
+        appendLog(layer, [
+          {
+            kind: "disposition",
+            taskId,
+            outcome: "none",
+            reason: `完成${item.label} writer 權限測試`,
+            agent: item.dispositionAgent,
+            sessionID: "s1",
+          },
+        ]),
+      );
+      const result = await env.call("task-state-sync", { event: "complete", taskId });
+      expect(result.ok, item.label).toBe(item.completes);
+      if (!item.completes) expect(result.code, item.label).toBe("MEMORY_WRITER_REQUIRED");
+      await env.dispose();
+    }
+  });
+
+  test("空 writerAgents 不允許高風險任務結案", async () => {
+    const env = await setup({ writerAgents: [] });
+    await createArchivingTask(env, "t1", "high");
+    const layer = memoryLayer(env.root);
+    await withMemoryLock(layer, () =>
+      appendLog(layer, [{ kind: "disposition", taskId: "t1", outcome: "none", reason: "沒有值得保留的新知識", agent: "memorizer", sessionID: "s1" }]),
+    );
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).code).toBe("MEMORY_WRITER_REQUIRED");
     await env.dispose();
   });
 

@@ -1,0 +1,1 @@
+{"kind":"write","topic":"fixture-topic","op":"create","beforeSha":null,"afterSha":"4253c26112479cc0410cd4256d526d6f57257228c78b99fb463499fd7f50c977","agent":"build","sessionID":"synthetic-session","seq":1,"at":"2026-10-07T18:01:27.290Z","prevHash":"genesis","hash":"07814f7e11aa8646cce9f106bb3d49b6df2b5ddec0322e16e8ee4025b9c32143"}

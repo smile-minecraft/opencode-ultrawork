@@ -1,24 +1,26 @@
-import type { Plugin } from "@opencode/plugin";
+import type { Host } from "../../../host.ts";
 import type { UltraworkSettings } from "../../../settings/defaults.ts";
 import { isModuleEnabled } from "../../registry.ts";
 import { aggregateCommentSignalGate, describeGateBlock } from "../../comment-signal/completion-gate.ts";
-import { verifyTaskDisposition } from "../../memory/disposition.ts";
-import { resolveGlobalConfigDir } from "../../../settings/paths.ts";
-import { homedir } from "node:os";
 import type { KeyValueStorage } from "../../../state/store.ts";
 import type { ProjectBinding, Task, TasksRegistry } from "../core/types.ts";
 import { createEmptyTasksRegistryLeaf, normalizeTasksRegistryLeaf } from "../registry/task-registry.ts";
 import { createRuntimeContext, type FullUltraworkRuntimeContext } from "./context-builder.ts";
 import type { RegistryIOOptions } from "./registry-io.ts";
-import { configureSessionBindingStore } from "./session-binding.ts";
+import { createSessionBindingStore, type SessionBindingStore } from "./session-binding.ts";
 
 export function createWorkflowRuntime(
-  ctx: Plugin.Context,
+  host: Host,
   settings: UltraworkSettings,
   registryIO?: RegistryIOOptions,
-): FullUltraworkRuntimeContext {
-  const input = { directory: ctx.location.project?.directory ?? ctx.location.directory } as unknown as Parameters<typeof createRuntimeContext>[0]["input"];
-  const options = { projectRoot: ctx.location.project?.directory ?? ctx.location.directory };
+): FullUltraworkRuntimeContext & { sessionBindings: SessionBindingStore } {
+  const projectRoot = host.roots.projectDirectory ?? host.roots.instanceDirectory;
+  const input: Parameters<typeof createRuntimeContext>[0]["input"] = {
+    ...(projectRoot ? { directory: projectRoot } : {}),
+  };
+  const options = { projectRoot };
+  const globalMemoryRoot = host.roots.globalConfigDirectory;
+  const writerAgents = [...settings.memory.writerAgents];
   let runtime!: FullUltraworkRuntimeContext;
 
   const createEmptyTasksRegistry = (project?: ProjectBinding): TasksRegistry =>
@@ -29,19 +31,23 @@ export function createWorkflowRuntime(
     protectedTaskIds: ReadonlySet<string> = new Set(),
   ): TasksRegistry => normalizeTasksRegistryLeaf(raw, project ?? runtime.getCurrentProject(), protectedTaskIds);
 
-  runtime = createRuntimeContext({ input, options, registryIO, createEmptyTasksRegistry, normalizeTasksRegistry });
-  const storage = ctx.storage as KeyValueStorage;
-  configureSessionBindingStore(storage);
+  runtime = createRuntimeContext({
+    input,
+    options,
+    registryIO,
+    writerAgents,
+    globalMemoryRoot,
+    createEmptyTasksRegistry,
+    normalizeTasksRegistry,
+  });
+  const storage = host.storage as KeyValueStorage;
+  const sessionBindings = createSessionBindingStore(storage);
   // 開關一律走 registry 的單一判斷（只有 boolean false 算關）：
   // 直接用 truthy 的話，0／"" 這類非預期值會跟 registry 結論相反。
   const memoryRequired =
     isModuleEnabled(settings, "memory") && settings.workflow.completion.requireMemoryDisposition;
 
   runtime.memoryDispositionRequired = memoryRequired;
-  runtime.validateMemoryDispositionForTask = (task, project, context) => {
-    const options = (ctx.options ?? {}) as Record<string, unknown>;
-    return verifyTaskDisposition({ projectRoot: runtime.resolveProjectRoot(context), globalMemoryRoot: typeof options.globalDir === "string" ? options.globalDir : resolveGlobalConfigDir(process.env, homedir()), task, writerAgents: settings.memory.writerAgents });
-  };
 
   runtime.validateCommentSignalForCompletion = async (sessionID) => {
     if (!isModuleEnabled(settings, "commentSignal")) return { ok: true, status: "disabled" };
@@ -62,5 +68,5 @@ export function createWorkflowRuntime(
     return { ok: true, status: gate.status };
   };
 
-  return runtime;
+  return Object.assign(runtime, { sessionBindings });
 }
