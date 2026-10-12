@@ -427,12 +427,12 @@ describe("核心啟動整合：合成宿主走 setupUltraworkCore", () => {
           "build",
         );
         expect(denied.code).toBe("AGENT_NOT_ALLOWED");
-        // 49 工具全數組裝（與 OpenCode 宿主同一份核心）。
+        // 50 工具全數組裝（與 OpenCode 宿主同一份核心）。
         expect([...synth.definitions.keys()].sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
         // 唯讀工具在第二宿主可執行。
         const manifest = await invokeSynthetic(synth, "tool_hook_manifest", {});
         expect(manifest.ok).toBe(true);
-        expect(manifest.data?.toolCount).toBe(49);
+        expect(manifest.data?.toolCount).toBe(50);
       } finally {
         await cleanup();
       }

@@ -74,26 +74,26 @@ const TOPIC = {
 describe("記憶結案檢查：完整流程", () => {
   test("memorizer 寫入並宣告 recorded 之後可以結案，history 記下處置", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1");
-    expect((await env.call("memory-write", { ...TOPIC, taskId: "t1" }, "memorizer")).ok).toBe(true);
-    const closed = await env.call("memory-task-close", { taskId: "t1", outcome: "recorded" }, "memorizer");
+    await createArchivingTask(env, "sample-task-01");
+    expect((await env.call("memory-write", { ...TOPIC, taskId: "sample-task-01" }, "memorizer")).ok).toBe(true);
+    const closed = await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "recorded" }, "memorizer");
     expect(closed.ok).toBe(true);
-    const completed = await env.call("task-state-sync", { event: "complete", taskId: "t1" });
+    const completed = await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" });
     expect(completed.ok).toBe(true);
     const registry = JSON.parse(readFileSync(join(env.root, ".ultrawork/tasks.json"), "utf8"));
-    expect(registry.tasks.t1.history.at(-1)).toContain(`memory=recorded#${closed.data.seq}`);
+    expect(registry.tasks["sample-task-01"].history.at(-1)).toContain(`memory=recorded#${closed.data.seq}`);
     await env.dispose();
   });
 
   test("設定的任意 writer 可完成高風險任務的記憶寫入與結案", async () => {
     const env = await setup({ writerAgents: ["agent-a"] });
-    await createArchivingTask(env, "t1", "high");
+    await createArchivingTask(env, "sample-task-01", "high");
     expect(
-      (await env.call("memory-task-close", { taskId: "t1", outcome: "none", reason: "沒有值得保留的新知識" }, "agent-b")).code,
+      (await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "none", reason: "沒有值得保留的新知識" }, "agent-b")).code,
     ).toBe("WRITER_REQUIRED");
-    expect((await env.call("memory-write", { ...TOPIC, taskId: "t1" }, "agent-a")).ok).toBe(true);
-    expect((await env.call("memory-task-close", { taskId: "t1", outcome: "recorded" }, "agent-a")).ok).toBe(true);
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).ok).toBe(true);
+    expect((await env.call("memory-write", { ...TOPIC, taskId: "sample-task-01" }, "agent-a")).ok).toBe(true);
+    expect((await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "recorded" }, "agent-a")).ok).toBe(true);
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" })).ok).toBe(true);
     await env.dispose();
   });
 
@@ -109,7 +109,7 @@ describe("記憶結案檢查：完整流程", () => {
 
     for (const [index, item] of cases.entries()) {
       const env = await setup({ writerAgents: item.writerAgents });
-      const taskId = `writer-matrix-${index}`;
+      const taskId = `writer-matrix-0${index}`;
       await createArchivingTask(env, taskId, "high");
       const layer = memoryLayer(env.root);
       await withMemoryLock(layer, () =>
@@ -133,27 +133,27 @@ describe("記憶結案檢查：完整流程", () => {
 
   test("空 writerAgents 不允許高風險任務結案", async () => {
     const env = await setup({ writerAgents: [] });
-    await createArchivingTask(env, "t1", "high");
+    await createArchivingTask(env, "sample-task-01", "high");
     const layer = memoryLayer(env.root);
     await withMemoryLock(layer, () =>
-      appendLog(layer, [{ kind: "disposition", taskId: "t1", outcome: "none", reason: "沒有值得保留的新知識", agent: "memorizer", sessionID: "s1" }]),
+      appendLog(layer, [{ kind: "disposition", taskId: "sample-task-01", outcome: "none", reason: "沒有值得保留的新知識", agent: "memorizer", sessionID: "s1" }]),
     );
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).code).toBe("MEMORY_WRITER_REQUIRED");
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" })).code).toBe("MEMORY_WRITER_REQUIRED");
     await env.dispose();
   });
 
   test("低風險任務由主代理宣告 none 就能結案", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1");
-    expect((await env.call("memory-task-close", { taskId: "t1", outcome: "none", reason: "只改了測試名稱，沒有新知識" })).ok).toBe(true);
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).ok).toBe(true);
+    await createArchivingTask(env, "sample-task-01");
+    expect((await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "none", reason: "只改了測試名稱，沒有新知識" })).ok).toBe(true);
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" })).ok).toBe(true);
     await env.dispose();
   });
 
   test("沒有處置時擋下，blockedBy 帶 memory", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1");
-    const blocked = await env.call("task-state-sync", { event: "complete", taskId: "t1" });
+    await createArchivingTask(env, "sample-task-01");
+    const blocked = await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" });
     expect(blocked.code).toBe("MEMORY_DISPOSITION_REQUIRED");
     expect(blocked.data.blockedBy).toEqual(["memory"]);
     await env.dispose();
@@ -163,62 +163,62 @@ describe("記憶結案檢查：完整流程", () => {
 describe("記憶結案檢查：各條規則", () => {
   test("高風險任務：主代理不能宣告 none；log 裡非 writer 的處置在 complete 被擋", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1", "high");
-    expect((await env.call("memory-task-close", { taskId: "t1", outcome: "none", reason: "沒有值得保留的新知識" })).code).toBe("WRITER_REQUIRED");
+    await createArchivingTask(env, "sample-task-01", "high");
+    expect((await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "none", reason: "沒有值得保留的新知識" })).code).toBe("WRITER_REQUIRED");
     // 繞過工具直接寫進 log 的處置，complete 也要擋下。
     const layer = memoryLayer(env.root);
     await withMemoryLock(layer, () =>
-      appendLog(layer, [{ kind: "disposition", taskId: "t1", outcome: "none", reason: "沒有值得保留的新知識", agent: "build", sessionID: "s1" }]),
+      appendLog(layer, [{ kind: "disposition", taskId: "sample-task-01", outcome: "none", reason: "沒有值得保留的新知識", agent: "build", sessionID: "s1" }]),
     );
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).code).toBe("MEMORY_WRITER_REQUIRED");
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" })).code).toBe("MEMORY_WRITER_REQUIRED");
     await env.dispose();
   });
 
   test("處置早於進入 ARCHIVING 的時間 → MEMORY_DISPOSITION_STALE", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1");
-    await env.call("memory-task-close", { taskId: "t1", outcome: "none", reason: "沒有值得保留的新知識" });
+    await createArchivingTask(env, "sample-task-01");
+    await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "none", reason: "沒有值得保留的新知識" });
     // 模擬「處置寫完之後任務才重新進入收尾」：把 archivingAt 推到處置之後。
     const path = join(env.root, ".ultrawork/tasks.json");
     const registry = JSON.parse(readFileSync(path, "utf8"));
-    registry.tasks.t1.archivingAt = new Date(Date.now() + 60_000).toISOString();
+    registry.tasks["sample-task-01"].archivingAt = new Date(Date.now() + 60_000).toISOString();
     writeFileSync(path, JSON.stringify(registry, null, 2));
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).code).toBe("MEMORY_DISPOSITION_STALE");
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" })).code).toBe("MEMORY_DISPOSITION_STALE");
     await env.dispose();
   });
 
   test("升級前就在收尾的任務（沒有 archivingAt）配 legacy-receipt 處置可以結案", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1");
+    await createArchivingTask(env, "sample-task-01");
     const path = join(env.root, ".ultrawork/tasks.json");
     const registry = JSON.parse(readFileSync(path, "utf8"));
-    delete registry.tasks.t1.archivingAt;
+    delete registry.tasks["sample-task-01"].archivingAt;
     writeFileSync(path, JSON.stringify(registry, null, 2));
     const layer = memoryLayer(env.root);
     await withMemoryLock(layer, () =>
-      appendLog(layer, [{ kind: "disposition", taskId: "t1", outcome: "legacy-receipt", legacyReceiptId: "receipt-t1", agent: "migration", sessionID: null }]),
+      appendLog(layer, [{ kind: "disposition", taskId: "sample-task-01", outcome: "legacy-receipt", legacyReceiptId: "receipt-sample-task-01", agent: "migration", sessionID: null }]),
     );
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).ok).toBe(true);
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" })).ok).toBe(true);
     await env.dispose();
   });
 
   test("主題在工具外被改 → MEMORY_OUT_OF_BAND_EDIT；reseal 之後可以結案", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1");
-    await env.call("memory-write", { ...TOPIC, taskId: "t1" }, "memorizer");
-    await env.call("memory-task-close", { taskId: "t1", outcome: "recorded" }, "memorizer");
+    await createArchivingTask(env, "sample-task-01");
+    await env.call("memory-write", { ...TOPIC, taskId: "sample-task-01" }, "memorizer");
+    await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "recorded" }, "memorizer");
     appendFileSync(join(env.root, ".ultrawork/memory/topics/release-checks.md"), "手改的一行\n");
-    const blocked = await env.call("task-state-sync", { event: "complete", taskId: "t1" });
+    const blocked = await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" });
     expect(blocked.code).toBe("MEMORY_OUT_OF_BAND_EDIT");
     expect(blocked.summary).toContain("project/release-checks");
     expect((await env.call("memory-maintain", { mode: "reseal-log", reason: "已核對手改內容無誤" }, "memorizer")).ok).toBe(true);
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).ok).toBe(true);
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" })).ok).toBe(true);
     await env.dispose();
   });
 
   test("處置之前的 log 有壞行不影響結案；處置之後的壞行會擋下", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1");
+    await createArchivingTask(env, "sample-task-01");
     const logPath = join(env.root, ".ultrawork/memory/log.jsonl");
     await env.call("memory-note", { content: "第一筆筆記" });
     await env.call("memory-note", { content: "第二筆筆記" });
@@ -227,22 +227,22 @@ describe("記憶結案檢查：各條規則", () => {
     const lines = readFileSync(logPath, "utf8").split("\n");
     lines[0] = "{broken";
     writeFileSync(logPath, lines.join("\n"));
-    expect((await env.call("memory-task-close", { taskId: "t1", outcome: "none", reason: "沒有值得保留的新知識" })).ok).toBe(true);
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).ok).toBe(true);
+    expect((await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "none", reason: "沒有值得保留的新知識" })).ok).toBe(true);
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" })).ok).toBe(true);
 
-    await createArchivingTask(env, "t2");
-    await env.call("memory-task-close", { taskId: "t2", outcome: "none", reason: "沒有值得保留的新知識" });
+    await createArchivingTask(env, "sample-task-02");
+    await env.call("memory-task-close", { taskId: "sample-task-02", outcome: "none", reason: "沒有值得保留的新知識" });
     appendFileSync(logPath, "{broken\n");
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t2" })).code).toBe("MEMORY_LOG_TAMPERED");
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-02" })).code).toBe("MEMORY_LOG_TAMPERED");
     await env.dispose();
   });
 
   test("記憶目錄是 symlink 時結案被擋下，回結構化錯誤而不是拋例外", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1");
+    await createArchivingTask(env, "sample-task-01");
     const outside = tempRoot("memory-gate-outside-");
     symlinkSync(outside, join(env.root, ".ultrawork/memory"));
-    const blocked = await env.call("task-state-sync", { event: "complete", taskId: "t1" });
+    const blocked = await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" });
     expect(blocked.ok).toBe(false);
     expect(blocked.code).toBe("MEMORY_DISPOSITION_REQUIRED");
     await env.dispose();
@@ -252,11 +252,11 @@ describe("記憶結案檢查：各條規則", () => {
 describe("記憶結案檢查：兩層", () => {
   test("寫在全域層的主題被工具外修改，錯誤指出 global/<主題>", async () => {
     const env = await setup();
-    await createArchivingTask(env, "t1");
-    await env.call("memory-write", { ...TOPIC, layer: "global", topic: "writing-style", taskId: "t1" }, "memorizer");
-    await env.call("memory-task-close", { taskId: "t1", outcome: "recorded" }, "memorizer");
+    await createArchivingTask(env, "sample-task-01");
+    await env.call("memory-write", { ...TOPIC, layer: "global", topic: "writing-style", taskId: "sample-task-01" }, "memorizer");
+    await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "recorded" }, "memorizer");
     appendFileSync(join(env.globalDir, ".ultrawork/memory/topics/writing-style.md"), "手改\n");
-    const blocked = await env.call("task-state-sync", { event: "complete", taskId: "t1" });
+    const blocked = await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" });
     expect(blocked.code).toBe("MEMORY_OUT_OF_BAND_EDIT");
     expect(blocked.summary).toContain("global/writing-style");
     await env.dispose();
@@ -264,12 +264,12 @@ describe("記憶結案檢查：兩層", () => {
 
   test("專案根目錄就是全域設定資料夾：兩層視為一層，log 只有一份", async () => {
     const env = await setup({ globalDir: "same" });
-    await createArchivingTask(env, "t1");
-    const written = await env.call("memory-write", { ...TOPIC, layer: "global", taskId: "t1" }, "memorizer");
+    await createArchivingTask(env, "sample-task-01");
+    const written = await env.call("memory-write", { ...TOPIC, layer: "global", taskId: "sample-task-01" }, "memorizer");
     expect(written.data.layer).toBe("project");
-    const closed = await env.call("memory-task-close", { taskId: "t1", outcome: "recorded" }, "memorizer");
+    const closed = await env.call("memory-task-close", { taskId: "sample-task-01", outcome: "recorded" }, "memorizer");
     expect(closed.data.refs).toEqual([{ layer: "project", seq: written.data.seq }]);
-    expect((await env.call("task-state-sync", { event: "complete", taskId: "t1" })).ok).toBe(true);
+    expect((await env.call("task-state-sync", { event: "complete", taskId: "sample-task-01" })).ok).toBe(true);
     await env.dispose();
   });
 });

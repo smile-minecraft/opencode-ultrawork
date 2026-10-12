@@ -22,6 +22,7 @@ const TOOL_NAMES = [
   "plan-content-update",
   "plan-content-delete",
   "work-order-build",
+  "workflow-id-check",
 ] as const;
 
 describe("workflow V2 模組註冊", () => {

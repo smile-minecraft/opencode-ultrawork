@@ -92,6 +92,9 @@ import type { UltraworkRuntimeContext } from "../runtime/context-builder.ts";
 import type { SessionBindingStore } from "../runtime/session-binding.ts";
 import { appendAuditEntry } from "../runtime/audit-log.ts";
 import { findTaskDisposition } from "../../memory/disposition.ts";
+import { nextTaskId, validateTaskId } from "../core/workflow-id.ts";
+import type { HostProcess } from "../../../kit/process-runner.ts";
+import { blockMessageForProject, knownWorkflowIds } from "./workflow-id-check.ts";
 
 /**
  * task_state_sync tool factory。
@@ -146,6 +149,7 @@ function buildTaskStateMachineDescription(): string {
 
 export function createTaskStateSyncTool(
   runtime: UltraworkRuntimeContext & { sessionBindings: SessionBindingStore },
+  hostProcess?: HostProcess,
 ) {
   return defineTool({
     name: "task-state-sync",
@@ -281,6 +285,20 @@ export function createTaskStateSyncTool(
         });
       }
       if (!taskId) return jsonResult({ ok: false, code: "TASK_ID_REQUIRED", error: "這個操作需要 taskId" });
+      // 計畫 ID 與任務 ID 不能留在專案內容裡。這一步在動註冊檔之前做：它要跑 git，
+      // 不該佔著註冊檔的鎖。只擋還沒結束的任務，重複呼叫 complete 的結果不變。
+      if (event === "complete") {
+        const tasksNow = runtime.readRegistry(context, false);
+        const current = tasksNow.tasks[taskId];
+        if (current && !isFinishedTaskState(current.state)) {
+          const idCheck = await blockMessageForProject(
+            runtime.resolveProjectRoot(context),
+            knownWorkflowIds(tasksNow, runtime.readPlansRegistry(context, false)),
+            hostProcess,
+          );
+          if (idCheck.message) return jsonResult({ ok: false, code: "WORKFLOW_ID_IN_PROJECT", error: idCheck.message });
+        }
+      }
       const result = await runtime.transactRegistries(context, async ({ tasks: registry, plans: plansRegistry }, control) => {
       let task: Task | undefined = registry.tasks[taskId];
 
@@ -289,7 +307,13 @@ export function createTaskStateSyncTool(
       }
 
       if (event === "create") {
-        if (task) return jsonResult({ ok: false, code: "TASK_ALREADY_EXISTS", error: `任務 ${taskId} 已經存在` });
+        // 格式只在建立時檢查：已經存在的任務不經過這裡，舊專案的 ID 照常可用。
+        const idCheck = validateTaskId(taskId);
+        if (!idCheck.ok) return jsonResult({ ok: false, code: "INVALID_TASK_ID", error: `任務 ID「${taskId}」不符合格式。${idCheck.reason}` });
+        if (task) {
+          const suggestion = nextTaskId(taskId.replace(/-\d{2}$/, ""), Object.keys(registry.tasks));
+          return jsonResult({ ok: false, code: "TASK_ALREADY_EXISTS", error: `任務 ${taskId} 已經存在。同一個主題的下一個 ID 是 ${suggestion}。` });
+        }
         if (!title?.trim()) return jsonResult({ ok: false, code: "TITLE_REQUIRED", error: "建立任務需要 title" });
         if (!to) return jsonResult({ ok: false, code: "INITIAL_STATE_REQUIRED", error: "建立任務需要 to（初始狀態）" });
         if (to !== "NEW") return jsonResult({ ok: false, code: "INVALID_INITIAL_STATE", error: "任務建立時的初始狀態只能是 NEW" });

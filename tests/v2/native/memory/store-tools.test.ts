@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,4 +117,33 @@ test("筆記 secret 不回顯、消費後不再列為 pending，extract 限 writ
   expect((await call(x.extract, { taskId: "task" })).taskNotes).toHaveLength(1);
   await call(x.write, { ...input, consumesNotes: [note.seq] });
   expect((await call(x.extract, { taskId: "task" })).pendingNotes).toHaveLength(0);
+});
+
+describe("memory-write 不收計畫 ID、任務 ID 和夾在正文裡的 frontmatter", () => {
+  const ctx = { agent: "memorizer", sessionID: "s1" } as never;
+  async function run(tool: { execute: (input: never, context: never) => Promise<{ content: string }> }, value: Record<string, unknown>) {
+    return JSON.parse((await tool.execute(value as never, ctx)).content);
+  }
+
+  test("標題、description 或正文裡有已登記的任務 ID 就拒絕；來源由工具記在 source", async () => {
+    const env = setup();
+    env.deps.knownWorkflowIds = async () => ["economy-review-03"];
+    const write = createMemoryWriteTool(env.deps);
+    for (const field of ["title", "description", "body"]) {
+      const rejected = await run(write, { ...input, [field]: `${(input as Record<string, unknown>)[field]}（economy-review-03 的審查）` });
+      expect(rejected.ok, field).toBe(false);
+      expect(JSON.stringify(rejected), field).toContain("WORKFLOW_ID_IN_MEMORY");
+    }
+    const accepted = await run(write, input);
+    expect(accepted.ok).toBe(true);
+    expect(readFileSync(join(env.root, ".ultrawork/memory/topics/checks.md"), "utf8")).toContain('source: "task:task"');
+  });
+
+  test("正文開頭夾了一份 frontmatter 就拒絕，不讓它被寫成正文", async () => {
+    const env = setup();
+    const body = '---\ntitle: "測試"\ndescription: "驗證功能"\ntype: "decision"\n---\n\n每次執行測試';
+    const rejected = await run(env.write, { ...input, body });
+    expect(rejected.ok).toBe(false);
+    expect(JSON.stringify(rejected)).toContain("INVALID_TOPIC_FORMAT");
+  });
 });

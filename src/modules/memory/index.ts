@@ -15,6 +15,7 @@ import { ensureMemoryStoreMigrated } from "../../migrate/memory-store.ts";
 import type { ModuleDefinition } from "../types.ts";
 import { createWorkflowRuntime } from "../workflow/runtime/v2-runtime.ts";
 import { createTaskContentReadTool } from "../workflow/tools/task-content.ts";
+import { knownWorkflowIds } from "../workflow/tools/workflow-id-check.ts";
 import { memoryLayers } from "./layers.ts";
 import { budgetForLayer } from "./constants.ts";
 import { resolveSessionDirectory } from "./session-root.ts";
@@ -45,6 +46,11 @@ export const memoryModule: ModuleDefinition = {
       },
       resolveRoot: (context) => resolveSessionDirectory(host, context),
       ensureMigrated: ensureMemoryStoreMigrated,
+      async knownWorkflowIds(root, context) {
+        // 和 taskMaterials 一樣以工作階段位置讀註冊檔，才不會拿到別的專案的 ID。
+        const workflow = createWorkflowRuntime({ ...host, roots: { ...host.roots, projectDirectory: root } }, settings);
+        return knownWorkflowIds(workflow.readRegistry(context, false), workflow.readPlansRegistry(context, false));
+      },
       async taskMaterials(taskId, root, context): Promise<TaskMaterials | null> {
         // 以工作階段位置建立 workflow runtime：subagent 可能在跟外掛實例不同的專案裡工作，
         // 用外掛實例的位置會讀到別的專案的任務。

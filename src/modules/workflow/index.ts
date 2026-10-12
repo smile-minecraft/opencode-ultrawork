@@ -25,6 +25,8 @@ import {
   createPlanContentUpdateTool,
 } from "./tools/plan-content.ts";
 import { createWorkOrderBuildTool } from "./tools/work-order-build.ts";
+import { blockMessageForCommit, createWorkflowIdCheckTool, isGitCommit, knownWorkflowIds } from "./tools/workflow-id-check.ts";
+import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 
 const TOOL_DEFINITION_MARKER = "<!-- uw-task-evidence-pack-guidance -->";
 
@@ -71,9 +73,11 @@ export const workflowModule: ModuleDefinition = {
     const workflow = createWorkflowRuntime(host, runtime.settings);
     const workOrders = createWorkOrderStore(host.storage);
     const bindings = workflow.sessionBindings;
+    // 程序只能經宿主提供的能力啟動；宿主沒提供時，比對專案變更的檢查會回報無法檢查。
+    const hostProcess = host.capabilities.process;
 
     const tools = {
-      "task-state-sync": createTaskStateSyncTool(workflow),
+      "task-state-sync": createTaskStateSyncTool(workflow, hostProcess),
       "task-content-read": createTaskContentReadTool(workflow),
       "task-content-update": createTaskContentUpdateTool(workflow),
       "plan-state-sync": createPlanStateSyncTool(workflow),
@@ -86,6 +90,7 @@ export const workflowModule: ModuleDefinition = {
       "plan-content-update": createPlanContentUpdateTool(workflow),
       "plan-content-delete": createPlanContentDeleteTool(workflow),
       "work-order-build": createWorkOrderBuildTool(workflow, workOrders),
+      "workflow-id-check": createWorkflowIdCheckTool(workflow, hostProcess),
     };
     const guidance = buildSubagentEvidencePackGuidance(
       resolveEvidencePackGatedSubagents(runtime.settings),
@@ -99,6 +104,16 @@ export const workflowModule: ModuleDefinition = {
     });
 
     const beforeRegistration = await host.tools.hook("execute.before", async (event) => {
+      if (event.tool === "shell" || event.tool === "bash") {
+        // commit 是 ID 流進專案歷史的最後一關：訊息和已暫存的內容有 ID 就不讓它執行。
+        const command = (event.input as { command?: unknown } | null | undefined)?.command;
+        if (typeof command !== "string" || !isGitCommit(command)) return;
+        const toolContext = { sessionID: typeof event.sessionID === "string" ? event.sessionID : undefined } as ToolExecutionContext;
+        const ids = knownWorkflowIds(workflow.readRegistry(toolContext, false), workflow.readPlansRegistry(toolContext, false));
+        const message = await blockMessageForCommit(command, workflow.resolveProjectRoot(toolContext), ids, hostProcess);
+        if (message) throw new Error(message);
+        return;
+      }
       if (event.tool !== "subagent") return;
       const input = event.input as Record<string, unknown> | null | undefined;
       if (!input) return;

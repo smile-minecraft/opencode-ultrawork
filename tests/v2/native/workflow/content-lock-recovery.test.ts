@@ -47,7 +47,7 @@ describe("寫入鎖復原：kill -9 後不需手動 rm 就能繼續工作", () =
     expect(diagnoseContentWriteLock(registryLockOf(root)).pidAlive).toBe(false);
 
     const before = readFileSync(registryLockOf(root), "utf-8");
-    const result = await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "P1" });
+    const result = await callTool(fake, "plan-state-sync", { event: "create", planId: "plan-one", title: "P1" });
     expect(result.ok).toBe(false);
     expect(result.code).toBe("CONTENT_LOCK_BUSY");
     expect(JSON.stringify(result)).toContain("unlockStale");
@@ -67,14 +67,14 @@ describe("寫入鎖復原：kill -9 後不需手動 rm 就能繼續工作", () =
       warnings.push(args.map(String).join(" "));
     };
     try {
-      const result = await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "P1" });
+      const result = await callTool(fake, "plan-state-sync", { event: "create", planId: "plan-one", title: "P1" });
       expect(result.ok).toBe(true);
     } finally {
       console.warn = originalWarn;
     }
     // 臨界區真的執行：計畫寫進 plans.json。
     const plans = JSON.parse(await readFile(join(root, ".ultrawork/plans.json"), "utf8"));
-    expect(Object.keys(plans.plans)).toEqual(["p1"]);
+    expect(Object.keys(plans.plans)).toEqual(["plan-one"]);
     // 孤兒鎖被回收：不是原來的假鎖（自己持有的鎖也會在臨界區結束後釋放）。
     const after = existsSync(registryLockOf(root)) ? readFileSync(registryLockOf(root), "utf-8") : null;
     expect(after === null || !after.includes("orphan")).toBe(true);
@@ -88,7 +88,7 @@ describe("寫入鎖復原：kill -9 後不需手動 rm 就能繼續工作", () =
     const fake = await setupWorkflow(root);
     const planted = await plantLock(registryLockOf(root), { pid: process.pid, ageMs: 5_000, token: "live" });
 
-    const result = await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "P1" });
+    const result = await callTool(fake, "plan-state-sync", { event: "create", planId: "plan-one", title: "P1" });
     expect(result.ok).toBe(false);
     expect(result.code).toBe("CONTENT_LOCK_BUSY");
     // 活著的鎖原封不動。
@@ -563,7 +563,7 @@ describe("資格檔診斷：五種情況與讀取失敗", () => {
     const lockRaw = readFileSync(registryLockOf(root), "utf-8");
 
     // 自動路徑 fail closed：回 BUSY 外框，不拋例外，不刪東西。
-    const busy = await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "P1" });
+    const busy = await callTool(fake, "plan-state-sync", { event: "create", planId: "plan-one", title: "P1" });
     expect(busy.ok).toBe(false);
     expect(busy.code).toBe("CONTENT_LOCK_BUSY");
     expect(readFileSync(registryLockOf(root), "utf-8")).toBe(lockRaw);
@@ -580,7 +580,7 @@ describe("資格檔診斷：五種情況與讀取失敗", () => {
 
     // 使用者照指示手動清除（測試內代勞），之後寫入恢復。
     await rm(`${registryLockOf(root)}.reclaim`, { force: true });
-    const ok = await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "P1" });
+    const ok = await callTool(fake, "plan-state-sync", { event: "create", planId: "plan-one", title: "P1" });
     expect(ok.ok).toBe(true);
     await fake.registration?.dispose();
   });

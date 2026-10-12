@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { z } from "zod";
+import { findWorkflowIds } from "../../workflow/core/workflow-id.ts";
 import { atomicWriteFile } from "../../../kit/atomic-write.ts";
 import type { MemoryLayerBudget } from "../constants.ts";
 import { renderIndex } from "../index-render.ts";
@@ -66,7 +67,7 @@ interface PreparedWrite {
 }
 
 /** 算出寫入結果並收集所有問題；不寫任何檔案。preview 與 apply 共用。 */
-function prepare(layer: MemoryLayer, input: WriteInput, budget: MemoryLayerBudget): PreparedWrite {
+function prepare(layer: MemoryLayer, input: WriteInput, budget: MemoryLayerBudget, workflowIds: readonly string[] = []): PreparedWrite {
   validateSlug(input.topic);
   const path = memoryPath(layer, "topics", `${input.topic}.md`);
   const before = readOptional(path);
@@ -79,6 +80,19 @@ function prepare(layer: MemoryLayer, input: WriteInput, budget: MemoryLayerBudge
     issue("SHA_MISMATCH", "expectedSha256 與目前內容不符，請先用 memory-read 取得最新的 sha256。");
   }
   if (input.op === "delete" && !input.reason?.trim()) issue("REASON_REQUIRED", "封存主題必須提供 reason。");
+
+  if (input.op === "create" || input.op === "update") {
+    // 只檢查這次送進來的文字：沒有改的欄位沿用舊值，舊內容的清理不在這裡強迫。
+    const submitted = [input.title, input.description, input.body].filter((text): text is string => typeof text === "string");
+    const leaked = [...new Set(submitted.flatMap((text) => findWorkflowIds(text, workflowIds).map((hit) => hit.match)))];
+    if (leaked.length > 0) {
+      issue("WORKFLOW_ID_IN_MEMORY", `標題、description 或正文裡有計畫 ID 或任務 ID：${leaked.map((text) => `「${text}」`).join("、")}。之後的工作階段看不懂這些 ID；來源已經由工具記在 source，請改成描述那件事本身。`);
+    }
+    // 正文開頭如果是一份 frontmatter，代表呼叫者把整個主題檔貼進了 body；照寫會變成兩份 frontmatter。
+    if (/^\s*---\r?\n[\s\S]*?\r?\n---\r?\n/.test(input.body ?? "")) {
+      issue("INVALID_TOPIC_FORMAT", "body 只放正文，不要包含 frontmatter；title、description、type 請用各自的欄位傳入。");
+    }
+  }
 
   const consumed = input.consumesNotes ?? [];
   const pending = pendingNotes(readLog(layer));
@@ -186,9 +200,10 @@ export function createMemoryWriteTool(deps: MemoryToolDeps) {
     async (input, context) => {
       requireWriter(deps, context);
       const layer = (await resolveLayers(deps, context, input.layer))[0]!;
+      const workflowIds = deps.knownWorkflowIds ? await deps.knownWorkflowIds(await deps.resolveRoot(context), context) : [];
       const budget = budgetForDepsLayer(deps, layer.layer);
       if (input.mode !== "apply") {
-        const preview = prepare(layer, input, budget);
+        const preview = prepare(layer, input, budget, workflowIds);
         return {
           ok: true,
           mode: "preview",
@@ -200,7 +215,7 @@ export function createMemoryWriteTool(deps: MemoryToolDeps) {
       }
 
       return withMemoryLock(layer, () => {
-        const prepared = prepare(layer, input, budget);
+        const prepared = prepare(layer, input, budget, workflowIds);
         if (prepared.issues.length > 0) {
           throw new MemoryError(prepared.issues[0]!.code, prepared.issues[0]!.error, {
             issues: prepared.issues,

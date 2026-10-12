@@ -42,6 +42,11 @@ export interface MemoryToolDeps {
   ensureMigrated?: (root: string) => Promise<unknown>;
   /** 讀取目前專案的任務與相關材料；任務不存在或不屬於目前專案時回 null。 */
   taskMaterials: (taskId: string, root: string, context: ToolExecutionContext) => Promise<TaskMaterials | null>;
+  /**
+   * 目前專案裡適合比對的計畫 ID 與任務 ID。記憶的內容不寫這些 ID：之後的工作階段看不懂，
+   * 來源已經由工具記在 `source`。不給時不檢查（workflow 模組關閉或測試）。
+   */
+  knownWorkflowIds?: (root: string, context: ToolExecutionContext) => Promise<readonly string[]>;
 }
 
 export const layerSchema = z.enum(["project", "global"]);

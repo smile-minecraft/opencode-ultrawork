@@ -69,13 +69,13 @@ function collectHooks(fake: ReturnType<typeof createFakeV2Context>) {
 }
 
 describe("正式入口工具與 hook 接線", () => {
-  test("註冊全部 49 工具（對照凍結清單）", async () => {
+  test("註冊全部 50 工具（對照凍結清單）", async () => {
     const { projectDir, globalDir } = tempDirs();
     const fake = createFakeV2Context({ directory: projectDir });
     const cleanup = await setupUltrawork(fake.ctx, { projectDir, globalDir });
     try {
       expect([...fake.added.keys()].sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
-      expect(fake.added.size).toBe(49);
+      expect(fake.added.size).toBe(50);
     } finally {
       await cleanup();
     }
@@ -101,14 +101,14 @@ describe("正式入口工具與 hook 接線", () => {
       expect(fake.toolHooks.has("execute.after")).toBe(true);
       expect(fake.sessionHooks.has("context")).toBe(true);
       expect(fake.sessionHooks.has("compaction")).toBe(true);
-      // tool.definition 以註冊效果驗證：49 工具都在。
-      expect(fake.added.size).toBe(49);
+      // tool.definition 以註冊效果驗證：50 工具都在。
+      expect(fake.added.size).toBe(50);
       // manifest 交叉比對：數量與接線預估一致。
       const manifest = await callEntryTool(fake, "tool_hook_manifest");
       expect(manifest.ok).toBe(true);
-      expect(manifest.toolCount).toBe(49);
+      expect(manifest.toolCount).toBe(50);
       expect(manifest.hookCount).toBe(6);
-      expect(manifest.sourceCount).toBe(41);
+      expect(manifest.sourceCount).toBe(42);
       expect(manifest.hooks.map((hook: any) => hook.name).sort()).toEqual([...HOOK_NAMES].sort());
       expect(manifest.hooks.every((hook: any) => hook.wired === true)).toBe(true);
     } finally {
@@ -239,7 +239,7 @@ describe("正式入口提示與壓縮相容", () => {
       const created = await callEntryTool(
         fake,
         "task-state-sync",
-        { event: "create", taskId: "t-bound", to: "NEW", title: "綁定測試", owner: "ultra", priority: "normal" },
+        { event: "create", taskId: "bound-task-01", to: "NEW", title: "綁定測試", owner: "ultra", priority: "normal" },
         "s-bound",
       );
       expect(created.ok).toBe(true);
@@ -307,7 +307,7 @@ describe("正式入口卸載重載", () => {
       const denied = await callEntryTool(fake, "verification_run", { runner: "bun", script: "test" }, "s1", "intruder");
       expect(denied.code).toBe("AGENT_NOT_ALLOWED");
       const manifest = await callEntryTool(fake, "tool_hook_manifest");
-      expect(manifest.toolCount).toBe(49);
+      expect(manifest.toolCount).toBe(50);
       expect(manifest.hookCount).toBe(6);
     } finally {
       await second();
@@ -324,7 +324,7 @@ describe("正式入口路徑與 storage key 不變", () => {
       const created = await callEntryTool(
         fake,
         "task-state-sync",
-        { event: "create", taskId: "t-path", to: "NEW", title: "路徑測試", owner: "ultra", priority: "normal" },
+        { event: "create", taskId: "path-task-01", to: "NEW", title: "路徑測試", owner: "ultra", priority: "normal" },
         "s1",
       );
       expect(created.ok).toBe(true);

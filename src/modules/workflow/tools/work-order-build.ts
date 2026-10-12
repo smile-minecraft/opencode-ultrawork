@@ -20,6 +20,9 @@ import { WORK_ORDER_REF_PREFIX, type WorkOrderStore } from "./work-order-store.t
 
 const textFields = ["taskIdentity", "objective", "knownEvidence", "constraints", "tddRequirements", "requiredReturn"] as const;
 
+/** 固定附在 `Task Identity` 最後的說明：ID 只用在回報，不能寫進專案內容。 */
+export const WORK_ORDER_ID_NOTICE = "上面的任務 ID 和計畫 ID 只用在你的回報和 memory-note。檔名、類別和函式的名稱、字串、測試資料、註解、文件和 commit 訊息都不能寫它們；專案裡的東西照它做的事命名。";
+
 export function createWorkOrderBuildTool(runtime: UltraworkRuntimeContext, store: WorkOrderStore) {
   return defineTool({
     name: "work-order-build",
@@ -75,6 +78,8 @@ export function createWorkOrderBuildTool(runtime: UltraworkRuntimeContext, store
           "工作說明欄位缺漏或格式不正確。", "請補齊非空文字；acceptanceCriteria 必須是非空陣列，每項為非空單行文字（或改傳有驗收條件的 taskId）。");
       }
       const bodies = textFields.slice(0, 5).map(field => input![field] as string);
+      // 接手的角色讀到的第一節就是 ID；不交代用途的話，它很容易拿 ID 替類別和檔案命名。
+      bodies[0] = `${bodies[0]!.trimEnd()}\n\n${WORK_ORDER_ID_NOTICE}`;
       bodies.push((criteria as string[]).map(item => `- [ ] ${item}`).join("\n"), input!.requiredReturn as string);
       const prompt = EVIDENCE_PACK_SECTIONS.map((name, index) => `### ${index + 1}. ${name}\n${bodies[index]}`).join("\n\n");
       const validation = validateEvidencePack(prompt);

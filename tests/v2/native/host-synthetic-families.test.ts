@@ -66,7 +66,7 @@ describe("合成宿主逐家族覆蓋", () => {
     try {
       await writeFile(
         join(roots.projectDirectory, "package.json"),
-        JSON.stringify({ scripts: { "test:p0": "bun -e \"console.log('SYNTHETIC_VERIFICATION_OK')\"" } }),
+        JSON.stringify({ scripts: { "test:plan-zero": "bun -e \"console.log('SYNTHETIC_VERIFICATION_OK')\"" } }),
       );
       const synth = createSyntheticHost({
         projectDirectory: roots.projectDirectory,
@@ -78,7 +78,7 @@ describe("合成宿主逐家族覆蓋", () => {
         const ran = await invokeSynthetic(
           synth,
           "verification_run",
-          { runner: "bun", script: "test:p0", timeoutMs: 15000 },
+          { runner: "bun", script: "test:plan-zero", timeoutMs: 15000 },
           "synthetic-session",
           "momus",
         );
@@ -88,7 +88,7 @@ describe("合成宿主逐家族覆蓋", () => {
         const denied = await invokeSynthetic(
           synth,
           "verification_run",
-          { runner: "bun", script: "test:p0" },
+          { runner: "bun", script: "test:plan-zero" },
           "synthetic-session",
           "build",
         );
@@ -221,7 +221,7 @@ describe("合成宿主逐家族覆蓋", () => {
       try {
         const task = await invokeSynthetic(synth, "task-state-sync", {
           event: "create",
-          taskId: "synth-t1",
+          taskId: "synth-task-01",
           to: "NEW",
           title: "合成宿主任務",
           owner: "ultra",
@@ -231,22 +231,22 @@ describe("合成宿主逐家族覆蓋", () => {
 
         const plan = await invokeSynthetic(synth, "plan-state-sync", {
           event: "create",
-          planId: "synth-p1",
+          planId: "synth-plan",
           title: "合成宿主計畫",
         });
         expect(plan.ok).toBe(true);
 
         const link = await invokeSynthetic(synth, "plan-task-link", {
-          planId: "synth-p1",
-          taskId: "synth-t1",
+          planId: "synth-plan",
+          taskId: "synth-task-01",
         });
         expect(link.ok).toBe(true);
 
         const taskStatus = await invokeSynthetic(synth, "task-state-sync", { event: "status" });
-        expect(JSON.stringify(taskStatus)).toContain("synth-t1");
+        expect(JSON.stringify(taskStatus)).toContain("synth-task-01");
         const planStatus = await invokeSynthetic(synth, "plan-state-sync", {
           event: "status",
-          planId: "synth-p1",
+          planId: "synth-plan",
         });
         expect(planStatus.ok).toBe(true);
       } finally {
@@ -281,7 +281,7 @@ describe("合成宿主逐家族覆蓋", () => {
         const manifest = await invokeSynthetic(synth, "tool_hook_manifest", {});
         expect(manifest.ok).toBe(true);
         expect(Array.isArray(manifest.data?.tools)).toBe(true);
-        expect(manifest.data?.toolCount).toBe(49);
+        expect(manifest.data?.toolCount).toBe(50);
 
         const doctor = await invokeSynthetic(synth, "workflow_doctor", {});
         expect(Array.isArray(doctor.data?.checks)).toBe(true);

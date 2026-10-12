@@ -26,6 +26,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { findWorkflowIds } from "../workflow/core/workflow-id.ts";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -152,6 +153,11 @@ export interface SkillerRootOverrides {
 
 export interface SkillerDeps {
   resolveProjectRoot(context?: ToolExecutionContext): string;
+  /**
+   * 目前專案裡適合比對的計畫 ID 與任務 ID。技能是長期保存的方法，不該引用某一次工作的 ID；
+   * 只靠格式猜不出實際在用的 ID，所以由註冊檔提供。不給時只做格式比對。
+   */
+  knownWorkflowIds?: () => readonly string[];
   /** 僅限直接 factory 測試注入；不可由 tool args / options / env 到達 production。 */
   roots?: SkillerRootOverrides;
   /** 宿主提供的角色檔編輯能力；null 表示宿主明確不支援，執行時必須拒絕。 */
@@ -765,6 +771,13 @@ function scanPatterns(content: string, patterns: Array<[RegExp, string]>, code: 
   return issues;
 }
 
+/** 比對任務註冊檔案裡實際存在的 ID；回報實際出現的寫法，方便直接找到要改的地方。 */
+function scanRegisteredWorkflowIds(content: string, ids: readonly string[]): SkillIssue[] {
+  const matches = [...new Set(findWorkflowIds(content, ids).map((hit) => hit.match))];
+  if (matches.length === 0) return [];
+  return [{ code: "WORKFLOW_ID_MARKER", message: `偵測到計畫或任務 ID：${matches.map((text) => `「${text}」`).join("、")}（WORKFLOW_ID_MARKER）` }];
+}
+
 function isTextContent(buffer: Buffer): boolean {
   for (const byte of buffer) {
     if (byte === 0) return false;
@@ -1023,6 +1036,7 @@ export interface SkillValidationResult {
  * 風險項（secret/high-risk/workflow/scripts/digest drift）為 warning。
  */
 export function validateSkillDir(input: ValidateSkillInput): SkillValidationResult {
+  const registeredIds = input.deps?.knownWorkflowIds?.() ?? [];
   const { skillDir, declaredName, scope, projectSlug, policy, personalPins, deps } = input;
   const blockers: SkillIssue[] = [];
   const warnings: SkillIssue[] = [];
@@ -1109,6 +1123,7 @@ export function validateSkillDir(input: ValidateSkillInput): SkillValidationResu
       blockers.push(...scanPatterns(raw, SECRET_PATTERNS, "SECRET_MARKER"));
       blockers.push(...scanPatterns(raw, HIGH_RISK_PATTERNS, "HIGH_RISK_MARKER"));
       blockers.push(...scanPatterns(raw, WORKFLOW_ID_PATTERNS, "WORKFLOW_ID_MARKER"));
+      blockers.push(...scanRegisteredWorkflowIds(raw, registeredIds));
     }
   }
 
@@ -1144,6 +1159,7 @@ export function validateSkillDir(input: ValidateSkillInput): SkillValidationResu
       withFile(scanPatterns(text, SECRET_PATTERNS, "SECRET_MARKER"));
       withFile(scanPatterns(text, HIGH_RISK_PATTERNS, "HIGH_RISK_MARKER"));
       withFile(scanPatterns(text, WORKFLOW_ID_PATTERNS, "WORKFLOW_ID_MARKER"));
+      withFile(scanRegisteredWorkflowIds(text, registeredIds));
     }
   }
 

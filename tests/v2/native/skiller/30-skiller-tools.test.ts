@@ -798,6 +798,27 @@ describe("30 - skiller: promote", () => {
     }
   });
 
+  test("技能內容裡有任務註冊檔案登記的 ID 就擋下，附帶檔案也算", async () => {
+    const ws = createTestWorkspace();
+    const fx = createPersonalFixture();
+    fixtures.push(fx);
+    try {
+      // 實際在用的 ID 不是 task-YYYYMMDD 這種寫法，只靠格式猜不到，所以要比對註冊檔。
+      const deps = { ...makeDeps(ws, fx), knownWorkflowIds: () => ["economy-review-12"] };
+      writeInstalledSkill(fx.draftRoot, "personal-domain-registered-id", validSkillMd("x") + "\n真實資料庫的驗證列進 economy-review-12。\n");
+      const r = await execFactory(createSkillerPromoteTool, deps, {
+        scope: "personal", name: "personal-domain-registered-id", mode: "apply", confirm: true, targetAgentGroups: ["implementation"],
+      });
+      expect(r.ok).toBe(false);
+      const blockers = (r.data as { blockers?: Array<{ code: string; message: string }> }).blockers ?? [];
+      const hit = blockers.find((b) => b.code === "WORKFLOW_ID_MARKER");
+      expect(hit?.message).toContain("economy-review-12");
+      expect(existsSync(join(fx.skillRoot, "personal-domain-registered-id"))).toBe(false);
+    } finally {
+      ws.cleanup();
+    }
+  });
+
   test("personal apply 對 high-risk / secret / workflow ID marker fail closed", async () => {
     const ws = createTestWorkspace();
     const fx = createPersonalFixture();

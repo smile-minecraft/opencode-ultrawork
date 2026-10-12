@@ -1,5 +1,5 @@
 /**
- * 凍結介面的單一正式資料：49 個工具、6 個 hook、11 個分類、41 個來源。
+ * 凍結介面的單一正式資料：50 個工具、6 個 hook、11 個分類、42 個來源。
  *
  * 這份表是**對外介面的唯一正式資料**，也是它的比對基準：工具名稱、參數與
  * 回傳格式是這個外掛對呼叫端承諾的介面，改動前要先取得使用者同意。
@@ -70,7 +70,7 @@ export const HOOK_WIRING_SOURCE: Record<HookName, string> = {
 };
 
 /**
- * 工具名 → 來源檔（V2 實際位置）。41 個來源涵蓋 49 個工具。
+ * 工具名 → 來源檔（V2 實際位置）。42 個來源涵蓋 50 個工具。
  * 單一唯一正式資料：其他位置不得另外維護 tool↔source 對應。
  */
 export const TOOL_SOURCES: Record<string, string> = {
@@ -125,6 +125,7 @@ export const TOOL_SOURCES: Record<string, string> = {
   "task-content-read": "src/modules/workflow/tools/task-content.ts",
   "task-content-update": "src/modules/workflow/tools/task-content.ts",
   "work-order-build": "src/modules/workflow/tools/work-order-build.ts",
+  "workflow-id-check": "src/modules/workflow/tools/workflow-id-check.ts",
   // memory
   // diagnostics（自我診斷）
   workflow_bootstrap: "src/modules/diagnostics/workflow-bootstrap.ts",
@@ -179,6 +180,7 @@ export const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   comment_signal_only_new: "comment_signal",
   verification_run: "verification",
   "work-order-build": "workflow",
+  "workflow-id-check": "workflow",
   "change-scope-check": "verification",
   "skiller-scan": "skill",
   skill_search: "skill",
@@ -267,6 +269,7 @@ export const TOOL_MODULES: Record<string, InventoryModuleKey> = {
   "task-content-read": "workflow",
   "task-content-update": "workflow",
   "work-order-build": "workflow",
+  "workflow-id-check": "workflow",
   workflow_bootstrap: "diagnostics",
   workflow_l1_check: "diagnostics",
   workflow_doctor: "diagnostics",

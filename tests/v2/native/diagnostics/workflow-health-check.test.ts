@@ -419,12 +419,12 @@ describe("實際工具集合的取得路徑", () => {
     await registration?.dispose();
   });
 
-  test("全部模組開啟時，預期集合是 49 個、實際只有診斷模組的 6 個 → 不一致", async () => {
+  test("全部模組開啟時，預期集合是 50 個、實際只有診斷模組的 6 個 → 不一致", async () => {
     const root = await tempRoot();
     writeMinimalWorkspace(root);
     const fake = await setupDiagnostics(root, DEFAULT_SETTINGS);
     const r = await callTool(fake, "workflow_health_check", { includeBaselineCheck: false });
-    expect(r.health_signals.tool_count_expected).toBe(49);
+    expect(r.health_signals.tool_count_expected).toBe(50);
     expect(r.health_signals.tool_count_actual).toBe(6);
     expect(r.health_signals.tool_count_match).toBe(false);
     expect(checkByName(r, "Tool Manifest Self-Consistency").status).toBe("failed");

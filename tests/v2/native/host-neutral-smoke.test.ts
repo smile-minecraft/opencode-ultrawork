@@ -108,7 +108,7 @@ async function invoke(host: SmokeHost, name: string, input: Record<string, unkno
 }
 
 describe("第二宿主最小煙霧測試", () => {
-  test("核心組裝 49 個工具、執行代表工具且不同宿主資料互不影響", async () => {
+  test("核心組裝 50 個工具、執行代表工具且不同宿主資料互不影響", async () => {
     const firstRoot = await mkdtemp(join(tmpdir(), "uw-host-a-"));
     const secondRoot = await mkdtemp(join(tmpdir(), "uw-host-b-"));
     const firstGlobal = join(firstRoot, "global");
@@ -132,7 +132,7 @@ describe("第二宿主最小煙霧測試", () => {
       registrations.push(...await registerModules({ host: second.host, settings: DEFAULT_SETTINGS }, BUILTIN_MODULES));
 
       const expected = [...EXPECTED_TOOL_NAMES].sort();
-      expect(expected).toHaveLength(49);
+      expect(expected).toHaveLength(50);
       expect([...first.definitions.keys()].sort()).toEqual(expected);
       expect([...second.definitions.keys()].sort()).toEqual(expected);
 
@@ -146,7 +146,7 @@ describe("第二宿主最小煙霧測試", () => {
 
       const task = await invoke(first, "task-state-sync", {
         event: "create",
-        taskId: "host-a-only",
+        taskId: "host-only-01",
         to: "NEW",
         title: "宿主 A 的任務",
         owner: "ultra",
@@ -154,7 +154,7 @@ describe("第二宿主最小煙霧測試", () => {
       });
       expect(task.ok).toBe(true);
       const otherHostTasks = await invoke(second, "task-state-sync", { event: "status" });
-      expect(JSON.stringify(otherHostTasks)).not.toContain("host-a-only");
+      expect(JSON.stringify(otherHostTasks)).not.toContain("host-only-01");
 
       const workOrder = await invoke(first, "work-order-build", {
         taskIdentity: "smoke task；smoke project",

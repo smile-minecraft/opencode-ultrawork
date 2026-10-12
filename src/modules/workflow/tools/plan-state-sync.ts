@@ -38,6 +38,7 @@ import type { Plan } from "../core/types.ts";
 import { PLAN_HISTORY_LIMIT, VALID_PLAN_TRANSITIONS } from "../core/constants.ts";
 import { sameProject, isFinishedPlanState, uniq, deriveProjectId } from "../core/helpers.ts";
 import { findActiveLinkedTaskIds } from "../registry/plan-completion.ts";
+import { validatePlanId } from "../core/workflow-id.ts";
 import { resolve } from "node:path";
 import type { UltraworkRuntimeContext } from "../runtime/context-builder.ts";
 
@@ -112,6 +113,9 @@ export function createPlanStateSyncTool(runtime: UltraworkRuntimeContext) {
       if (event === "create") {
         if (!planId) return jsonResult({ ok: false, code: "PLAN_ID_REQUIRED", error: "建立計畫需要 planId" });
         if (!title?.trim()) return jsonResult({ ok: false, code: "TITLE_REQUIRED", error: "建立計畫需要 title" });
+        // 格式只在建立時檢查：已經存在的計畫不經過這裡，舊專案的 ID 照常可用。
+        const idCheck = validatePlanId(planId);
+        if (!idCheck.ok) return jsonResult({ ok: false, code: "INVALID_PLAN_ID", error: `計畫 ID「${planId}」不符合格式。${idCheck.reason}` });
         if (plan) return jsonResult({ ok: false, code: "PLAN_ALREADY_EXISTS", error: `計畫 ${planId} 已經存在` });
         if (to && to !== "DRAFT") {
           return jsonResult({ ok: false, code: "INVALID_INITIAL_STATE", error: "計畫建立時的初始狀態只能是 DRAFT" });

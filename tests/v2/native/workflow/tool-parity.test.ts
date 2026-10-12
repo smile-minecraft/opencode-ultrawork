@@ -100,6 +100,7 @@ describe("workflow 工具介面 parity", () => {
       "plan-task-link", "plan-status", "plan-next", "plan-progress-reconcile",
       "plan-content-create", "plan-content-read", "plan-content-update", "plan-content-delete",
       "work-order-build",
+      "workflow-id-check",
     ];
     for (const name of names) {
       const result = JSON.parse((await fake.added.get(name).execute({}, fakeV2ToolContext())).content);

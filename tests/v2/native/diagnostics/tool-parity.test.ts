@@ -3,7 +3,7 @@
  *
  * ⚠️ 這裡的 `FROZEN_*` 清單是**對外介面的凍結值**，不是測試Fixtures。
  *
- * 49 個工具的名稱與參數、6 個 hook 名、11 個分類、41 個來源檔位置都是這個
+ * 50 個工具的名稱與參數、6 個 hook 名、11 個分類、42 個來源檔位置都是這個
  * 外掛對呼叫端（OpenCode runtime、既有設定、使用者的 script）承諾的介面。
  * 改動其中任何一項都算**對外介面變更**，需要先問過使用者，不能當成普通
  * 重構順手改掉。
@@ -86,6 +86,7 @@ const FROZEN_TOOL_NAMES: readonly string[] = [
   "ultrawork_selftest",
   "verification_run",
   "work-order-build",
+  "workflow-id-check",
   "workflow_bootstrap",
   "workflow_doctor",
   "workflow_health_check",
@@ -143,6 +144,7 @@ const FROZEN_SOURCE_PATHS: readonly string[] = [
   "src/modules/workflow/tools/task-content.ts",
   "src/modules/workflow/tools/task-state-sync.ts",
   "src/modules/workflow/tools/work-order-build.ts",
+  "src/modules/workflow/tools/workflow-id-check.ts",
 ];
 
 const FROZEN_CATEGORIES: readonly string[] = [
@@ -206,6 +208,7 @@ const FROZEN_TOOL_CATEGORIES: Readonly<Record<string, string>> = {
   "ultrawork_selftest": "workflow",
   "verification_run": "verification",
   "work-order-build": "workflow",
+  "workflow-id-check": "workflow",
   "workflow_bootstrap": "workflow",
   "workflow_doctor": "workflow",
   "workflow_health_check": "workflow",
@@ -321,10 +324,10 @@ describe("diagnostics 工具介面 parity", () => {
 });
 
 describe("凍結介面：inventory 與內嵌清單逐項對應", () => {
-  test("四個數量就是對外承諾的 49／6／41／11", () => {
-    expect(FROZEN_TOOL_NAMES).toHaveLength(49);
+  test("四個數量就是對外承諾的 50／6／42／11", () => {
+    expect(FROZEN_TOOL_NAMES).toHaveLength(50);
     expect(FROZEN_HOOK_NAMES).toHaveLength(6);
-    expect(FROZEN_SOURCE_PATHS).toHaveLength(41);
+    expect(FROZEN_SOURCE_PATHS).toHaveLength(42);
     expect(FROZEN_CATEGORIES).toHaveLength(11);
   });
 

@@ -7,6 +7,8 @@
  */
 
 import { join } from "node:path";
+import { createWorkflowRuntime } from "../workflow/runtime/v2-runtime.ts";
+import { knownWorkflowIds } from "../workflow/tools/workflow-id-check.ts";
 import type { ToolExecutionContext } from "../../kit/define-tool.ts";
 import { expandHome, resolveAgentsRoot, resolveGlobalUltraworkDir } from "../../settings/paths.ts";
 import type { HostRegistration } from "../../host.ts";
@@ -47,6 +49,15 @@ function createDeps(runtime: ModuleRuntime): SkillerDeps {
     roots: productionRoots(runtime),
     agentRoleEditor: runtime.host.capabilities.agentRoleEditor ?? null,
     resolveProjectRoot: (_context?: ToolExecutionContext) => projectDirectory,
+    knownWorkflowIds: () => {
+      // 註冊檔讀不到（專案還沒用過任務）時當成沒有 ID，其餘的檢查照常進行。
+      try {
+        const workflow = createWorkflowRuntime(runtime.host, runtime.settings);
+        return knownWorkflowIds(workflow.readRegistry(undefined, false), workflow.readPlansRegistry(undefined, false));
+      } catch {
+        return [];
+      }
+    },
   };
 }
 

@@ -68,25 +68,25 @@ async function occupy(root: string, name: string): Promise<void> {
 }
 
 describe("workflow registry 寫入鎖", () => {
-  test("工具層並行建立 task 保留 t1／t2", async () => {
+  test("工具層並行建立 task 保留 sample-task-01／sample-task-02", async () => {
     const root = await tempRoot();
     const fake = await setupWorkflow(root);
-    await Promise.all(["t1", "t2"].map((taskId) => callToolRetryBusy(fake, "task-state-sync", {
+    await Promise.all(["sample-task-01", "sample-task-02"].map((taskId) => callToolRetryBusy(fake, "task-state-sync", {
       event: "create", taskId, to: "NEW", title: taskId, owner: "ultra", priority: "normal",
     })));
     const registry = JSON.parse(await readFile(join(root, ".ultrawork/tasks.json"), "utf8"));
-    expect(Object.keys(registry.tasks).sort()).toEqual(["t1", "t2"]);
+    expect(Object.keys(registry.tasks).sort()).toEqual(["sample-task-01", "sample-task-02"]);
     await fake.registration?.dispose();
   });
 
-  test("工具層並行建立 plan 保留 p1／p2", async () => {
+  test("工具層並行建立 plan 保留 plan-one／plan-two", async () => {
     const root = await tempRoot();
     const fake = await setupWorkflow(root);
-    await Promise.all(["p1", "p2"].map((planId) => callToolRetryBusy(fake, "plan-state-sync", {
+    await Promise.all(["plan-one", "plan-two"].map((planId) => callToolRetryBusy(fake, "plan-state-sync", {
       event: "create", planId, title: planId,
     })));
     const registry = JSON.parse(await readFile(join(root, ".ultrawork/plans.json"), "utf8"));
-    expect(Object.keys(registry.plans).sort()).toEqual(["p1", "p2"]);
+    expect(Object.keys(registry.plans).sort()).toEqual(["plan-one", "plan-two"]);
     await fake.registration?.dispose();
   });
 
@@ -96,23 +96,23 @@ describe("workflow registry 寫入鎖", () => {
     settings.modules.memory = false;
     settings.modules.commentSignal = false;
     const fake = await setupWorkflow(root, settings);
-    await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "P1" });
-    await callTool(fake, "task-state-sync", { event: "create", taskId: "t1", to: "NEW", title: "T1", owner: "ultra", priority: "normal" });
-    await callTool(fake, "plan-task-link", { planId: "p1", taskId: "t1" });
+    await callTool(fake, "plan-state-sync", { event: "create", planId: "plan-one", title: "P1" });
+    await callTool(fake, "task-state-sync", { event: "create", taskId: "sample-task-01", to: "NEW", title: "T1", owner: "ultra", priority: "normal" });
+    await callTool(fake, "plan-task-link", { planId: "plan-one", taskId: "sample-task-01" });
     for (const [from, to] of [["NEW", "PLANNED"], ["PLANNED", "IN_PROGRESS"], ["IN_PROGRESS", "REVIEWING"], ["REVIEWING", "ARCHIVING"]]) {
-      await callTool(fake, "task-state-sync", { event: "transition", taskId: "t1", from, to });
+      await callTool(fake, "task-state-sync", { event: "transition", taskId: "sample-task-01", from, to });
     }
-    await callTool(fake, "task-state-sync", { event: "complete", taskId: "t1" });
+    await callTool(fake, "task-state-sync", { event: "complete", taskId: "sample-task-01" });
     const [reconcile, created] = await Promise.all([
-      callToolRetryBusy(fake, "plan-progress-reconcile", { planId: "p1", mode: "apply" }),
-      callToolRetryBusy(fake, "task-state-sync", { event: "create", taskId: "t2", to: "NEW", title: "T2", owner: "ultra", priority: "normal" }),
+      callToolRetryBusy(fake, "plan-progress-reconcile", { planId: "plan-one", mode: "apply" }),
+      callToolRetryBusy(fake, "task-state-sync", { event: "create", taskId: "sample-task-02", to: "NEW", title: "T2", owner: "ultra", priority: "normal" }),
     ]);
     expect(reconcile.ok).toBe(true);
     expect(created.ok).toBe(true);
     const tasks = JSON.parse(await readFile(join(root, ".ultrawork/tasks.json"), "utf8"));
     const plans = JSON.parse(await readFile(join(root, ".ultrawork/plans.json"), "utf8"));
-    expect(Object.keys(tasks.tasks).sort()).toEqual(["t1", "t2"]);
-    expect(Object.keys(plans.plans)).toEqual(["p1"]);
+    expect(Object.keys(tasks.tasks).sort()).toEqual(["sample-task-01", "sample-task-02"]);
+    expect(Object.keys(plans.plans)).toEqual(["plan-one"]);
     await fake.registration?.dispose();
   });
 
@@ -120,7 +120,7 @@ describe("workflow registry 寫入鎖", () => {
     const root = await tempRoot();
     await occupy(root, "registry.lock");
     const fake = await setupWorkflow(root);
-    const result = await callTool(fake, "plan-state-sync", { event: "create", planId: "p1", title: "測試" });
+    const result = await callTool(fake, "plan-state-sync", { event: "create", planId: "plan-one", title: "測試" });
     expect(result.ok).toBe(false);
     expect(result.code).toBe("CONTENT_LOCK_BUSY");
     expect(JSON.stringify(result)).toContain("unlockStale");
@@ -164,32 +164,36 @@ describe("workflow registry 寫入鎖", () => {
     settings.modules.memory = false;
     settings.modules.commentSignal = false;
     const fake = await setupWorkflow(root, settings);
-    for (const planId of ["foo/bar", "foo-bar", "Foo", "foo", "p2", "p3", "p4", "p5", "p0"]) {
+    for (const planId of ["foo-bar", "plan-two", "plan-three", "plan-four", "plan-five", "plan-zero"]) {
       await callTool(fake, "plan-state-sync", { event: "create", planId, title: planId });
     }
     const plansPath = join(root, ".ultrawork/plans.json");
     const plans = JSON.parse(await readFile(plansPath, "utf8"));
+    // 這三個 ID 過不了建立時的格式檢查，只可能來自舊資料，所以直接放進註冊檔。
+    for (const legacyId of ["foo/bar", "Foo", "foo"]) {
+      plans.plans[legacyId] = { ...plans.plans["foo-bar"], planId: legacyId, title: legacyId };
+    }
     for (const plan of Object.values(plans.plans) as Array<{ state: string; planId: string }>) plan.state = "COMPLETED";
     plans.plans["foo-bar"].updatedAt = new Date(Date.now() + 200_000).toISOString();
     plans.plans.foo.updatedAt = new Date(Date.now() + 150_000).toISOString();
     plans.plans.Foo.updatedAt = new Date(Date.now() + 175_000).toISOString();
-    plans.plans.p0.updatedAt = new Date(Date.now() + 100_000).toISOString();
+    plans.plans["plan-zero"].updatedAt = new Date(Date.now() + 100_000).toISOString();
     plans.plans["foo/bar"].contentRef = ".ultrawork/plans/foo-bar.md";
     plans.plans["foo-bar"].contentRef = ".ultrawork/plans/foo-bar.md";
-    plans.plans.p2.contentRef = ".ultrawork/plans/p3.md";
-    plans.plans.p3.contentRef = ".ultrawork/plans/p2.md";
+    plans.plans["plan-two"].contentRef = ".ultrawork/plans/plan-three.md";
+    plans.plans["plan-three"].contentRef = ".ultrawork/plans/plan-two.md";
     atomicWriteFile(plansPath, JSON.stringify(plans, null, 2));
     const contentPath = join(root, ".ultrawork/plans/foo-bar.md");
     const caseContentPath = join(root, ".ultrawork/plans/foo.md");
     await mkdir(join(root, ".ultrawork/plans"), { recursive: true });
     atomicWriteFile(contentPath, "surviving foo-bar content");
     atomicWriteFile(caseContentPath, "surviving foo content");
-    const p2ContentPath = join(root, ".ultrawork/plans/p3.md");
-    const p3ContentPath = join(root, ".ultrawork/plans/p2.md");
-    atomicWriteFile(p2ContentPath, "p3 content");
-    atomicWriteFile(p3ContentPath, "p2 content");
+    const p2ContentPath = join(root, ".ultrawork/plans/plan-three.md");
+    const p3ContentPath = join(root, ".ultrawork/plans/plan-two.md");
+    atomicWriteFile(p2ContentPath, "plan-three content");
+    atomicWriteFile(p3ContentPath, "plan-two content");
 
-    const result = await callTool(fake, "plan-content-create", { planId: "p0", content: "# P0\n" });
+    const result = await callTool(fake, "plan-content-create", { planId: "plan-zero", content: "# P0\n" });
     expect(result.ok).toBe(true);
     expect(await readFile(contentPath, "utf8")).toBe("surviving foo-bar content");
     expect(await readFile(caseContentPath, "utf8")).toBe("surviving foo content");
@@ -204,40 +208,40 @@ describe("workflow registry 寫入鎖", () => {
     settings.modules.memory = false;
     settings.modules.commentSignal = false;
     const fake = await setupWorkflow(root, settings);
-    for (const planId of ["p0", "p1", "p2", "p3", "p4", "p5"]) {
+    for (const planId of ["plan-zero", "plan-one", "plan-two", "plan-three", "plan-four", "plan-five"]) {
       await callTool(fake, "plan-state-sync", { event: "create", planId, title: planId });
     }
     for (let index = 0; index < 6; index++) {
-      const taskId = `finished-${index}`;
+      const taskId = `finished-task-0${index}`;
       await callTool(fake, "task-state-sync", {
         event: "create", taskId, to: "NEW", title: taskId, owner: "ultra", priority: "normal",
       });
-      await callTool(fake, "plan-task-link", { planId: "p0", taskId });
+      await callTool(fake, "plan-task-link", { planId: "plan-zero", taskId });
     }
     const plansPath = join(root, ".ultrawork/plans.json");
     const tasksPath = join(root, ".ultrawork/tasks.json");
     const plans = JSON.parse(await readFile(plansPath, "utf8"));
     for (const plan of Object.values(plans.plans) as Array<{ state: string }>) plan.state = "COMPLETED";
-    plans.plans.p0.updatedAt = new Date(Date.now() + 100_000).toISOString();
+    plans.plans["plan-zero"].updatedAt = new Date(Date.now() + 100_000).toISOString();
     atomicWriteFile(plansPath, JSON.stringify(plans, null, 2));
     const tasks = JSON.parse(await readFile(tasksPath, "utf8"));
     for (const task of Object.values(tasks.tasks) as Array<{ state: string }>) task.state = "COMPLETED";
     atomicWriteFile(tasksPath, JSON.stringify(tasks, null, 2));
 
-    const created = await callTool(fake, "plan-content-create", { planId: "p0", content: "# P0\n" });
+    const created = await callTool(fake, "plan-content-create", { planId: "plan-zero", content: "# P0\n" });
     expect(created.ok).toBe(true);
-    const status = await callTool(fake, "plan-status", { planId: "p0" });
+    const status = await callTool(fake, "plan-status", { planId: "plan-zero" });
     expect(status.ok).toBe(true);
     expect(status.data.missingIds).toEqual([]);
     expect(status.data.inconsistencies).toEqual([]);
-    expect(status.data.tombstonedIds).toEqual(["finished-0"]);
+    expect(status.data.tombstonedIds).toEqual(["finished-task-00"]);
     expect(status.data.finishedCount).toBe(6);
     const persistedPlans = JSON.parse(await readFile(plansPath, "utf8"));
-    const tombstone = persistedPlans.plans.p0.completionTombstones["finished-0"];
+    const tombstone = persistedPlans.plans["plan-zero"].completionTombstones["finished-task-00"];
     expect(tombstone.state).toBe("COMPLETED");
     expect(typeof tombstone.finishedAt).toBe("string");
     const persistedTasks = JSON.parse(await readFile(tasksPath, "utf8"));
-    expect(persistedTasks.tasks["finished-0"]).toBeUndefined();
+    expect(persistedTasks.tasks["finished-task-00"]).toBeUndefined();
     await fake.registration?.dispose();
   });
 
@@ -291,7 +295,7 @@ describe("workflow registry 寫入鎖", () => {
     await rm(join(root, ".ultrawork/audit.jsonl"), { force: true });
     symlinkSync(victim, join(root, ".ultrawork/audit.jsonl"));
 
-    const written = appendAuditEntry(runtime, { event: "risk-declared", taskId: "t1", projectId: "p1" }, context);
+    const written = appendAuditEntry(runtime, { event: "risk-declared", taskId: "sample-task-01", projectId: "plan-one" }, context);
     expect(written).toBe(false);
     expect(readFileSync(victim)).toEqual(original);
   });
@@ -458,29 +462,29 @@ describe("workflow registry 寫入鎖", () => {
     const planTool = createPlanStateSyncTool(runtime);
     const contentTool = createPlanContentCreateTool(runtime);
     const run = async (tool: any, input: Record<string, unknown>) => JSON.parse((await tool.execute(input, context)).content);
-    for (const planId of ["p0", "p1", "p2", "p3", "p4", "p5"]) {
+    for (const planId of ["plan-zero", "plan-one", "plan-two", "plan-three", "plan-four", "plan-five"]) {
       await run(planTool, { event: "create", planId, title: planId });
     }
     const plansPath = join(root, ".ultrawork/plans.json");
     const tasksPath = join(root, ".ultrawork/tasks.json");
     const plans = JSON.parse(await readFile(plansPath, "utf8"));
     for (const plan of Object.values(plans.plans) as Array<{ state: string; planId: string }>) plan.state = "COMPLETED";
-    plans.plans.p0.updatedAt = new Date(Date.now() + 100_000).toISOString();
-    plans.plans.p5.contentRef = ".ultrawork/plans/p5.md";
+    plans.plans["plan-zero"].updatedAt = new Date(Date.now() + 100_000).toISOString();
+    plans.plans["plan-five"].contentRef = ".ultrawork/plans/plan-five.md";
     atomicWriteFile(plansPath, JSON.stringify(plans, null, 2));
     const tasks = JSON.parse(await readFile(tasksPath, "utf8"));
     for (const task of Object.values(tasks.tasks) as Array<{ state: string }>) task.state = "COMPLETED";
     atomicWriteFile(tasksPath, JSON.stringify(tasks, null, 2));
-    const contentPath = join(root, ".ultrawork/plans/p5.md");
+    const contentPath = join(root, ".ultrawork/plans/plan-five.md");
     await mkdir(join(root, ".ultrawork/plans"), { recursive: true });
-    atomicWriteFile(contentPath, "p5 content");
+    atomicWriteFile(contentPath, "plan-five content");
     const plansBefore = await readFile(plansPath, "utf8");
     const tasksBefore = await readFile(tasksPath, "utf8");
-    const result = await run(contentTool, { planId: "p0", content: "# P0\n" });
+    const result = await run(contentTool, { planId: "plan-zero", content: "# P0\n" });
     expect(result.code).toBe("REGISTRY_WRITE_FAILED_ROLLED_BACK");
     expect(await readFile(plansPath, "utf8")).toBe(plansBefore);
     expect(await readFile(tasksPath, "utf8")).toBe(tasksBefore);
-    expect(await readFile(contentPath, "utf8")).toBe("p5 content");
+    expect(await readFile(contentPath, "utf8")).toBe("plan-five content");
   });
 
   test("writePlansRegistry 第二檔失敗時回滾 plans.json／tasks.json", async () => {
@@ -500,16 +504,16 @@ describe("workflow registry 寫入鎖", () => {
       const result = await tool.execute(input, context);
       return JSON.parse(result.content);
     };
-    for (const planId of ["p0", "p1", "p2", "p3", "p4", "p5"]) {
+    for (const planId of ["plan-zero", "plan-one", "plan-two", "plan-three", "plan-four", "plan-five"]) {
       await run(planTool, { event: "create", planId, title: planId });
     }
     const plansPath = join(root, ".ultrawork/plans.json");
     const tasksPath = join(root, ".ultrawork/tasks.json");
     const seeded = JSON.parse(await readFile(plansPath, "utf8"));
     for (const plan of Object.values(seeded.plans) as Array<{ state: string }>) plan.state = "COMPLETED";
-    seeded.plans.p0.updatedAt = new Date(Date.now() + 100_000).toISOString();
+    seeded.plans["plan-zero"].updatedAt = new Date(Date.now() + 100_000).toISOString();
     atomicWriteFile(plansPath, JSON.stringify(seeded, null, 2));
-    const contentPath = join(root, ".ultrawork/plans/p5.md");
+    const contentPath = join(root, ".ultrawork/plans/plan-five.md");
     await mkdir(join(root, ".ultrawork/plans"), { recursive: true });
     const contentBytes = Buffer.from([0xff, 0xfe, 0x00, 0x80, 0x41]);
     writeFileSync(contentPath, contentBytes);
@@ -517,11 +521,11 @@ describe("workflow registry 寫入鎖", () => {
     const tasksBefore = await readFile(tasksPath, "utf8");
     failTasks = true;
 
-    const result = await run(contentTool, { planId: "p0", content: "# P0\n" });
+    const result = await run(contentTool, { planId: "plan-zero", content: "# P0\n" });
     expect(result.code).toBe("REGISTRY_WRITE_FAILED_ROLLED_BACK");
     expect(await readFile(plansPath, "utf8")).toBe(plansBefore);
     expect(await readFile(tasksPath, "utf8")).toBe(tasksBefore);
-    expect(existsSync(join(root, ".ultrawork/plans/p0.md"))).toBe(false);
+    expect(existsSync(join(root, ".ultrawork/plans/plan-zero.md"))).toBe(false);
     expect(readFileSync(contentPath)).toEqual(contentBytes);
   });
 
@@ -530,21 +534,21 @@ describe("workflow registry 寫入鎖", () => {
     const fake = createFakeV2Context({ directory: root, sessionDirectory: root });
     const runtime = createWorkflowRuntime(fake.host, DEFAULT_SETTINGS);
     const toolContext = fakeV2ToolContext();
-    await Promise.all(["t1", "t2"].map((taskId) => transactRetryBusy(() => runtime.transactRegistries(toolContext, (draft, control) => {
+    await Promise.all(["sample-task-01", "sample-task-02"].map((taskId) => transactRetryBusy(() => runtime.transactRegistries(toolContext, (draft, control) => {
       draft.tasks.tasks[taskId] = { taskId } as never;
       control.commit();
     }))));
     const tasks = JSON.parse(await readFile(join(root, ".ultrawork/tasks.json"), "utf8"));
-    expect(Object.keys(tasks.tasks).sort()).toEqual(["t1", "t2"]);
+    expect(Object.keys(tasks.tasks).sort()).toEqual(["sample-task-01", "sample-task-02"]);
   });
 
   test("state.md 使用 state.lock，忙碌時回 CONTENT_LOCK_BUSY 外框且不覆寫狀態投影", async () => {
     const root = await tempRoot();
     const fake = await setupWorkflow(root);
-    await callTool(fake, "task-state-sync", { event: "create", taskId: "seed", to: "NEW", title: "初始化", owner: "ultra", priority: "normal" });
+    await callTool(fake, "task-state-sync", { event: "create", taskId: "seed-task-01", to: "NEW", title: "初始化", owner: "ultra", priority: "normal" });
     await occupy(root, "state.lock");
     const result = await callTool(fake, "task-state-sync", {
-      event: "create", taskId: "t1", to: "NEW", title: "測試", owner: "ultra", priority: "normal",
+      event: "create", taskId: "sample-task-01", to: "NEW", title: "測試", owner: "ultra", priority: "normal",
     });
     expect(result.ok).toBe(false);
     expect(result.code).toBe("CONTENT_LOCK_BUSY");
