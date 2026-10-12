@@ -69,8 +69,10 @@ jobs:
         run: |
           set -euo pipefail
           pkg_version="$(node -p "require('./package.json').version")"
-          # 剛發布完 registry 可能還沒同步，有限次重試是等 CDN，不是掩蓋錯誤。
-          meta="$(curl -fsSL --retry 5 --retry-delay 10 "https://registry.npmjs.org/opencode-ultrawork/$pkg_version")"
+          # 剛發布完 npm 還在處理套件，這段時間查版本會回 404，實測要一到三分鐘才查得到。
+          # curl 預設只對暫時性的錯誤重試，404 不算，所以要加 --retry-all-errors，
+          # 否則這一步會在套件已經發布成功的情況下失敗。最多等五分鐘，還查不到才算失敗。
+          meta="$(curl -fsSL --retry 30 --retry-delay 10 --retry-all-errors "https://registry.npmjs.org/opencode-ultrawork/$pkg_version")"
           remote_shasum="$(node -e "console.log(JSON.parse(require('fs').readFileSync(0, 'utf8')).dist.shasum)" <<< "$meta")"
           tarball="$(npm pack --silent)"
           local_shasum="$(sha1sum "$tarball" | cut -d' ' -f1)"
